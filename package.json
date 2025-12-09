@@ -1,0 +1,38 @@
+{
+  "name": "playwrightcaptchakrakenjs",
+  "version": "1.0.0",
+  "description": "Playwright wrapper which uses CaptchaKraken-cli to solve captchas.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "playwright test",
+    "prepublishOnly": "npm run build"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JWriter20/PlaywrightCaptchaKrakenJS.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/JWriter20/PlaywrightCaptchaKrakenJS/issues"
+  },
+  "homepage": "https://github.com/JWriter20/PlaywrightCaptchaKrakenJS#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.57.0",
+    "@types/node": "^24.10.2",
+    "dotenv": "^17.2.3",
+    "typescript": "^5.9.3"
+  },
+  "dependencies": {
+    "cursory-ts": "^1.0.0",
+    "patchright": "^1.57.0",
+    "patchright-core": "^1.57.0"
+  }
+}
