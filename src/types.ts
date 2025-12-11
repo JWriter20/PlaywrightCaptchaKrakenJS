@@ -35,5 +35,11 @@ export interface ClickAction {
   target_coordinates: [number, number] | null;
 }
 
-export type SolverResult = ClickAction | ClickAction[];
+export interface WaitAction {
+  action: 'wait';
+  duration_ms: number;
+}
 
+export type CaptchaAction = ClickAction | WaitAction;
+
+export type SolverResult = CaptchaAction | CaptchaAction[];

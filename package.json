@@ -10,7 +10,8 @@
   "scripts": {
     "build": "tsc",
     "test": "playwright test",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "update-cli": "git -C CaptchaKraken-cli pull origin main"
   },
   "repository": {
     "type": "git",

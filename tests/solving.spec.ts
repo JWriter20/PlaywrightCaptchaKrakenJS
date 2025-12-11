@@ -79,7 +79,8 @@ testWithSolver.describe('Real World Solving Tests', () => {
     if (challengeFrame && await challengeFrame.isVisible()) {
       console.log('Challenge appeared, attempting to solve challenge grid...');
       // Loop a few times for multi-step challenges
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 15; i++) {
+        console.log(`\n--- Solve Attempt ${i + 1}/15 ---`);
         await page.waitForTimeout(2000); // Wait for images to load/fade
         // Check if we are done
         const isChecked = await page.frames().find(f => f.url().includes('recaptcha/api2/anchor'))
@@ -114,7 +115,8 @@ testWithSolver.describe('Real World Solving Tests', () => {
     }
 
     // 3. Loop solve
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 15; i++) {
+      console.log(`\n--- hCaptcha Attempt ${i + 1}/15 ---`);
       await page.waitForTimeout(2000);
 
       // Check success in response field

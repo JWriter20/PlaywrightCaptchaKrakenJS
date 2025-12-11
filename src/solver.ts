@@ -5,7 +5,7 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CaptchaKrakenConfig, SolverResult, ClickAction } from './types';
+import { CaptchaKrakenConfig, SolverResult, ClickAction, CaptchaAction } from './types';
 
 const execAsync = promisify(exec);
 
@@ -42,11 +42,60 @@ export class CaptchaKrakenSolver {
         throw new Error('Could not get bounding box of captcha element');
       }
 
+      console.log(`Executing ${actionList.length} actions.`);
+
+      let performedAction = false;
       for (const action of actionList) {
         if (action.action === 'click') {
-          await this.executeClick(page, captchaElement, action, elementBox);
+          await this.executeClick(page, captchaElement, action as ClickAction, elementBox);
           // Small delay between clicks
           await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+          performedAction = true;
+        } else if (action.action === 'wait') {
+          if (action.duration_ms > 0) {
+            console.log(`Waiting for ${action.duration_ms}ms as requested by CLI`);
+            await new Promise(resolve => setTimeout(resolve, action.duration_ms));
+            performedAction = true;
+          }
+        }
+      }
+
+      if (!performedAction) {
+        console.log('No active actions performed (empty or done). Checking for Verify/Next button...');
+        const contentFrame = await captchaElement.contentFrame();
+        if (contentFrame) {
+          // 1. Try generic button selectors by text
+          const buttonTexts = ['Verify', 'Next', 'Submit', 'Skip'];
+          for (const text of buttonTexts) {
+            try {
+              // Using XPath to find buttons or inputs with specific text/value
+              // Case insensitive contains for text, or value attribute
+              const btn = await contentFrame.$(`xpath=//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')] | //div[@role="button" and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')]`);
+              if (btn && await btn.isVisible()) {
+                console.log(`Clicking button with text "${text}"`);
+                await btn.click();
+                return;
+              }
+            } catch (e) {
+              // Ignore locator errors
+            }
+          }
+
+          // 2. Try specific ID (Recaptcha)
+          const recaptchaVerify = await contentFrame.$('#recaptcha-verify-button');
+          if (recaptchaVerify && await recaptchaVerify.isVisible()) {
+            console.log('Clicking Recaptcha Verify/Next button by ID');
+            await recaptchaVerify.click();
+            return;
+          }
+
+          // 3. Try specific class (hCaptcha)
+          const hcaptchaVerify = await contentFrame.$('.button-submit');
+          if (hcaptchaVerify && await hcaptchaVerify.isVisible()) {
+            console.log('Clicking hCaptcha Verify/Submit button by Class');
+            await hcaptchaVerify.click();
+            return;
+          }
         }
       }
     } finally {
@@ -116,6 +165,7 @@ export class CaptchaKrakenSolver {
     }
 
     const command = cmdParts.join(' ');
+    console.log(`Executing CaptchaKraken CLI: ${command}`);
 
     try {
       const { stdout, stderr } = await execAsync(command, {
@@ -123,44 +173,62 @@ export class CaptchaKrakenSolver {
         maxBuffer: 10 * 1024 * 1024 // Increase buffer for large outputs if needed
       });
 
+      console.log('CaptchaKraken CLI stdout:', stdout);
+      if (stderr) {
+        console.error('CaptchaKraken CLI stderr:', stderr);
+      }
+
       if (!stdout.trim()) {
         // If stdout is empty, maybe check stderr or throw
         throw new Error(`CLI returned empty output. Stderr: ${stderr}`);
       }
 
       try {
-        // Find the JSON in stdout. There might be logs.
-        // Assuming the last line is the JSON or the JSON is the main output.
-        // The user's CLI prints json.dumps(action_data) at the end.
-        // But there might be other prints if the python code is chatty.
-        // We'll try to find the last valid JSON array or object.
+        // Find all JSON objects in stdout that look like actions
         const lines = stdout.trim().split('\n');
-        let jsonResult: any = null;
+        const allActions: any[] = [];
+        let foundAny = false;
 
-        // Try parsing from the last line backwards
-        for (let i = lines.length - 1; i >= 0; i--) {
+        for (const line of lines) {
           try {
-            const parsed = JSON.parse(lines[i]);
-            if (Array.isArray(parsed) || (parsed.action && (parsed.target_bounding_box || parsed.target_coordinates))) {
-              jsonResult = parsed;
-              break;
+            const parsed = JSON.parse(line);
+            if (Array.isArray(parsed)) {
+              allActions.push(...parsed);
+              foundAny = true;
+            } else if (parsed.action && (parsed.target_bounding_box || parsed.target_coordinates || parsed.action === 'wait')) {
+              allActions.push(parsed);
+              foundAny = true;
             }
           } catch (e) {
-            // Not json
+            // Not json or not relevant
           }
         }
 
-        if (!jsonResult) {
-          // Fallback: try parsing the whole output
-          jsonResult = JSON.parse(stdout);
+        if (!foundAny) {
+          // Fallback: try parsing the whole output if it wasn't line-separated
+          try {
+            const parsed = JSON.parse(stdout);
+            if (Array.isArray(parsed)) {
+              allActions.push(...parsed);
+            } else if (parsed.action && (parsed.target_bounding_box || parsed.target_coordinates)) {
+              allActions.push(parsed);
+            }
+          } catch (e) {
+            // Ignore
+          }
         }
 
-        return jsonResult as SolverResult;
+        console.log('CaptchaKraken parsed result:', JSON.stringify(allActions, null, 2));
+
+        return allActions as SolverResult;
       } catch (parseError) {
         throw new Error(`Failed to parse CLI output: ${stdout}\nStderr: ${stderr}`);
       }
 
     } catch (error: any) {
+      console.error('Error executing CaptchaKraken CLI:', error);
+      if (error.stdout) console.log('CLI stdout on error:', error.stdout);
+      if (error.stderr) console.error('CLI stderr on error:', error.stderr);
       throw new Error(`Failed to execute captcha solver CLI: ${error.message}`);
     }
   }
@@ -215,13 +283,8 @@ export class CaptchaKrakenSolver {
 
     for (let i = 0; i < points.length; i++) {
       const point = points[i];
-      // timing in cursory is delay in ms to wait *before* this point? or duration?
-      // "generate_trajectory(start, end) -> (points, timings)"
-      // Based on typical python library:
-      // timings[i] corresponds to time to wait.
-      // Let's assume timings[i] is the delay to wait before/after moving to point[i].
-      // Usually these libraries return steps.
-      const delay = timings[i];
+      const SPEED_MULTIPLIER = 2.5;
+      const delay = timings[i] / SPEED_MULTIPLIER;
       await page.mouse.move(point[0], point[1]);
       if (delay > 0) {
         // cursory-ts timings might be small, let's just wait.
@@ -232,7 +295,7 @@ export class CaptchaKrakenSolver {
 
     // Perform click
     await page.mouse.down();
-    await page.waitForTimeout(Math.random() * 50 + 20); // Random hold duration
+    await page.waitForTimeout(Math.random() * 30 + 20); // Random hold duration
     await page.mouse.up();
 
     // Update last known position
