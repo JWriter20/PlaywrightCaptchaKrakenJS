@@ -3,6 +3,7 @@ import { CaptchaKrakenSolver } from '../src/solver.js';
 import * as path from 'path';
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
+import { Camoufox } from 'camoufox-js';
 
 // Load environment variables
 dotenv.config();
@@ -42,6 +43,12 @@ const API_KEY = process.env.API_KEY || process.env.GEMINI_API_KEY;
 
 // Skip tests if REPO_PATH is not configured
 const testWithSolver = test.extend<{ solver: CaptchaKrakenSolver }>({
+  browser: [async ({ }, use) => {
+    const browser = await Camoufox({ headless: false });
+    await use(browser);
+    await browser.close();
+  }, { scope: 'worker' }],
+
   solver: async ({ }, use) => {
     if (!REPO_PATH || !fs.existsSync(REPO_PATH)) {
       console.warn('Skipping solving tests: CAPTCHA_KRAKEN_REPO_PATH not set or invalid.');

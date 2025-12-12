@@ -32,6 +32,7 @@
     "typescript": "^5.9.3"
   },
   "dependencies": {
+    "camoufox-js": "^0.8.4",
     "cursory-ts": "^1.0.0",
     "patchright": "^1.57.0",
     "patchright-core": "^1.57.0"

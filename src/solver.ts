@@ -9,9 +9,24 @@ import { CaptchaKrakenConfig, SolverResult, ClickAction, CaptchaAction } from '.
 
 const execAsync = promisify(exec);
 
+// Simple Vector interface for internal use
+export interface Vector {
+  x: number;
+  y: number;
+}
+
+export interface TimedVector {
+  x: number;
+  y: number;
+  timestamp?: number;
+}
+
+const log = (message: string, ...args: any[]) => console.log(`[Solver] ${message}`, ...args);
+const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
 export class CaptchaKrakenSolver {
   private config: CaptchaKrakenConfig;
-  private lastMousePosition: [number, number] = [0, 0];
+  private lastMousePosition: Vector = { x: 100, y: 100 }; // Start at safe position
 
   constructor(config: CaptchaKrakenConfig) {
     this.config = config;
@@ -49,12 +64,12 @@ export class CaptchaKrakenSolver {
         if (action.action === 'click') {
           await this.executeClick(page, captchaElement, action as ClickAction, elementBox);
           // Small delay between clicks
-          await new Promise(resolve => setTimeout(resolve, Math.random() * 500 + 200));
+          await delay(Math.random() * 500 + 200);
           performedAction = true;
         } else if (action.action === 'wait') {
           if (action.duration_ms > 0) {
             console.log(`Waiting for ${action.duration_ms}ms as requested by CLI`);
-            await new Promise(resolve => setTimeout(resolve, action.duration_ms));
+            await delay(action.duration_ms);
             performedAction = true;
           }
         }
@@ -73,7 +88,7 @@ export class CaptchaKrakenSolver {
               const btn = await contentFrame.$(`xpath=//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')] | //div[@role="button" and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')]`);
               if (btn && await btn.isVisible()) {
                 console.log(`Clicking button with text "${text}"`);
-                await btn.click();
+                await this.moveAndClick(page, btn);
                 return;
               }
             } catch (e) {
@@ -85,7 +100,7 @@ export class CaptchaKrakenSolver {
           const recaptchaVerify = await contentFrame.$('#recaptcha-verify-button');
           if (recaptchaVerify && await recaptchaVerify.isVisible()) {
             console.log('Clicking Recaptcha Verify/Next button by ID');
-            await recaptchaVerify.click();
+            await this.moveAndClick(page, recaptchaVerify);
             return;
           }
 
@@ -93,7 +108,7 @@ export class CaptchaKrakenSolver {
           const hcaptchaVerify = await contentFrame.$('.button-submit');
           if (hcaptchaVerify && await hcaptchaVerify.isVisible()) {
             console.log('Clicking hCaptcha Verify/Submit button by Class');
-            await hcaptchaVerify.click();
+            await this.moveAndClick(page, hcaptchaVerify);
             return;
           }
         }
@@ -179,12 +194,10 @@ export class CaptchaKrakenSolver {
       }
 
       if (!stdout.trim()) {
-        // If stdout is empty, maybe check stderr or throw
         throw new Error(`CLI returned empty output. Stderr: ${stderr}`);
       }
 
       try {
-        // Find all JSON objects in stdout that look like actions
         const lines = stdout.trim().split('\n');
         const allActions: any[] = [];
         let foundAny = false;
@@ -205,7 +218,6 @@ export class CaptchaKrakenSolver {
         }
 
         if (!foundAny) {
-          // Fallback: try parsing the whole output if it wasn't line-separated
           try {
             const parsed = JSON.parse(stdout);
             if (Array.isArray(parsed)) {
@@ -233,6 +245,117 @@ export class CaptchaKrakenSolver {
     }
   }
 
+  // Simplified move function with smooth movement
+  async move(
+    page: Page,
+    selectorOrElement: string | ElementHandle,
+    options: { paddingPercentage?: number } = {}
+  ): Promise<void> {
+    let elem: ElementHandle | null = null;
+    if (typeof selectorOrElement === 'string') {
+      elem = await page.waitForSelector(selectorOrElement, { state: 'visible', timeout: 10000 });
+    } else {
+      elem = selectorOrElement;
+    }
+
+    if (!elem) {
+      throw new Error(`Element not found: ${selectorOrElement}`);
+    }
+
+    await elem.scrollIntoViewIfNeeded();
+
+    const box = await elem.boundingBox();
+    if (!box) {
+      throw new Error(`Element has no bounding box: ${selectorOrElement}`);
+    }
+
+    // Default padding 25% to stay well inside the element
+    const padding = (options.paddingPercentage || 25) / 100;
+    const padX = box.width * padding;
+    const padY = box.height * padding;
+
+    // Pick a random point within the padded area
+    const targetX = box.x + padX + Math.random() * (box.width - 2 * padX);
+    const targetY = box.y + padY + Math.random() * (box.height - 2 * padY);
+
+    await this.performSmoothMove(page, targetX, targetY);
+  }
+
+  async moveAndClick(page: Page, element: ElementHandle) {
+    await this.move(page, element);
+    await page.mouse.down();
+    await delay(Math.random() * 50 + 20);
+    await page.mouse.up();
+  }
+
+  private async performSmoothMove(page: Page, x: number, y: number) {
+    // Generate trajectory using cursory-ts with 60Hz frequency for better control
+    const [points, timings] = generate_trajectory(
+      [this.lastMousePosition.x, this.lastMousePosition.y],
+      [x, y],
+      60 // 60 points per second
+    );
+
+    const SPEED_MULTIPLIER = 1;
+
+    const vectors: TimedVector[] = [];
+
+    for (let i = 0; i < points.length; i++) {
+      vectors.push({
+        x: points[i][0],
+        y: points[i][1],
+        timestamp: timings[i] / SPEED_MULTIPLIER // timings are cumulative from start
+      });
+    }
+
+    await this.tracePath(page, vectors);
+  }
+
+  private async tracePath(page: Page, vectors: TimedVector[]) {
+    // Get viewport for clamping
+    let viewport: { width: number, height: number } = { width: 1920, height: 1080 };
+    try {
+      const vp = page.viewportSize();
+      if (vp) viewport = vp;
+    } catch (e) { }
+
+    const startTime = Date.now();
+
+    for (let i = 0; i < vectors.length; i++) {
+      const v = vectors[i];
+
+      try {
+        // Clamp coordinates to viewport
+        const clampedX = Math.max(0, Math.min(v.x, viewport.width));
+        const clampedY = Math.max(0, Math.min(v.y, viewport.height));
+
+        // Move mouse
+        await page.mouse.move(clampedX, clampedY);
+
+        // Update last position
+        this.lastMousePosition = { x: clampedX, y: clampedY };
+
+        // Calculate delay to match target timestamp
+        if (v.timestamp !== undefined) {
+          const targetTime = startTime + v.timestamp;
+          const now = Date.now();
+          const delayMs = targetTime - now;
+
+          if (delayMs > 0) {
+            await delay(delayMs);
+          }
+        }
+      } catch (error) {
+        // Check if page closed or other fatal errors if needed, otherwise ignore
+        const errorMessage = error instanceof Error ? error.message : String(error);
+        if (errorMessage.includes('Target closed') || errorMessage.includes('Session closed')) {
+          log('Warning: could not move mouse, page or session closed.');
+          return;
+        }
+      }
+    }
+  }
+
   private async executeClick(
     page: Page,
     element: ElementHandle,
@@ -244,16 +367,14 @@ export class CaptchaKrakenSolver {
 
     if (action.target_bounding_box) {
       // Pick random point in padding
-      // [min_x, min_y, max_x, max_y] (percentages)
       const [minX, minY, maxX, maxY] = action.target_bounding_box;
 
-      // Calculate pixel coordinates relative to element
       const pixelMinX = minX * elementBox.width;
       const pixelMaxX = maxX * elementBox.width;
       const pixelMinY = minY * elementBox.height;
       const pixelMaxY = maxY * elementBox.height;
 
-      // Apply padding (e.g. 10% inside the box to avoid edges)
+      // Apply padding (10%)
       const paddingX = (pixelMaxX - pixelMinX) * 0.1;
       const paddingY = (pixelMaxY - pixelMinY) * 0.1;
 
@@ -278,28 +399,12 @@ export class CaptchaKrakenSolver {
     const absoluteX = elementBox.x + relativeX;
     const absoluteY = elementBox.y + relativeY;
 
-    // Use cursory-ts to generate realistic mouse movement
-    const [points, timings] = generate_trajectory(this.lastMousePosition, [absoluteX, absoluteY]);
-
-    for (let i = 0; i < points.length; i++) {
-      const point = points[i];
-      const SPEED_MULTIPLIER = 2.5;
-      const delay = timings[i] / SPEED_MULTIPLIER;
-      await page.mouse.move(point[0], point[1]);
-      if (delay > 0) {
-        // cursory-ts timings might be small, let's just wait.
-        // In python example: time.sleep(t / 1000)
-        await page.waitForTimeout(delay);
-      }
-    }
+    // Use the shared smooth move method
+    await this.performSmoothMove(page, absoluteX, absoluteY);
 
     // Perform click
     await page.mouse.down();
     await page.waitForTimeout(Math.random() * 30 + 20); // Random hold duration
     await page.mouse.up();
-
-    // Update last known position
-    this.lastMousePosition = [absoluteX, absoluteY];
   }
 }
-
