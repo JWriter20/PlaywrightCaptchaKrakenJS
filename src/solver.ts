@@ -10,12 +10,12 @@ import { CaptchaKrakenConfig, SolverResult, ClickAction, CaptchaAction } from '.
 const execAsync = promisify(exec);
 
 // Simple Vector interface for internal use
-export interface Vector {
+interface Vector {
   x: number;
   y: number;
 }
 
-export interface TimedVector {
+interface TimedVector {
   x: number;
   y: number;
   timestamp?: number;
