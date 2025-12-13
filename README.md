@@ -6,16 +6,28 @@ A Patchright (Playwright) wrapper for [CaptchaKraken-cli](https://github.com/JWr
 
 1.  **Node.js** and **npm**.
 2.  **Python 3.8+** installed.
-3.  **CaptchaKraken-cli** repository cloned and set up.
-    *   Clone the repo: `git clone https://github.com/JWriter20/CaptchaKraken-cli`
-    *   Install python dependencies: `pip install -r requirements.txt` (inside the CaptchaKraken-cli directory).
-    *   Setup your environment variables (API keys) in `.env` if needed or pass them in config.
 
 ## Installation
 
 ```bash
 npm install playwright-captcha-kraken-js patchright-core
 ```
+
+If you're cloning this repository, initialize the git submodule:
+
+```bash
+git submodule update --init --recursive
+```
+
+Then install the Python dependencies for CaptchaKraken-cli:
+
+```bash
+cd CaptchaKraken-cli
+pip install -r requirements.txt
+cd ..
+```
+
+**Note:** Setup your environment variables (API keys) in `.env` if needed or pass them in config.
 
 ## Usage
 
@@ -29,9 +41,9 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
   
   // Configure the solver
   const solver = new CaptchaKrakenSolver({
-    repoPath: '/path/to/CaptchaKraken-cli', // Absolute path to the cloned CLI repo
     pythonCommand: 'python3',               // Python executable
     // Optional overrides:
+    // repoPath: './CaptchaKraken-cli',     // Default: './CaptchaKraken-cli'
     // model: 'gemini-2.5-flash-lite',      // Default
     // apiProvider: 'gemini',               // Default
     // apiKey: 'YOUR_API_KEY'               // Defaults to process.env.GEMINI_API_KEY
@@ -60,11 +72,13 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `repoPath` | `string` | **Required** | Path to the `CaptchaKraken-cli` directory. |
+| `repoPath` | `string` | `'./CaptchaKraken-cli'` | Path to the `CaptchaKraken-cli` directory. |
 | `pythonCommand` | `string` | `'python'` | Python command to use. |
 | `model` | `string` | `'gemini-2.5-flash-lite'` | The vision model to use. |
 | `apiProvider` | `'ollama' \| 'gemini'` | `'gemini'` | The API provider. |
 | `apiKey` | `string` | `process.env.GEMINI_API_KEY` | API Key (required for Gemini). |
+
+**Note:** A special finetuned AI model for improved accuracy will be available soon.
 
 ## Testing
 
@@ -76,14 +90,15 @@ npm test
 
 ### End-to-End Solving Tests
 
-To run the real-world solving tests (which connect to your local `CaptchaKraken-cli`), you must provide the necessary environment variables, either in a `.env` file or inline:
+To run the real-world solving tests (which connect to your local `CaptchaKraken-cli`), you can optionally provide environment variables to override defaults:
 
 ```bash
-CAPTCHA_KRAKEN_REPO_PATH="/absolute/path/to/CaptchaKraken-cli" \
 MODEL="llama3.2-vision" \
 API_PROVIDER="ollama" \
 npx playwright test tests/solving.spec.ts
 ```
+
+Note: The tests will automatically use `./CaptchaKraken-cli` as the default path. You can override it with `CAPTCHA_KRAKEN_REPO_PATH` if needed.
 
 These tests will:
 1.  Navigate to demo pages (Recaptcha, hCaptcha, Turnstile).

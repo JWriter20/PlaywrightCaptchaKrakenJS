@@ -1,5 +1,5 @@
 {
-  "name": "playwrightcaptchakrakenjs",
+  "name": "playwright-captcha-kraken-js",
   "version": "1.0.0",
   "description": "Playwright wrapper which uses CaptchaKraken-cli to solve captchas.",
   "main": "dist/index.js",
