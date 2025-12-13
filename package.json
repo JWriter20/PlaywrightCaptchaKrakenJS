@@ -1,6 +1,6 @@
 {
   "name": "playwright-captcha-kraken-js",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "Playwright wrapper which uses CaptchaKraken-cli to solve captchas.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -9,7 +9,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "test": "playwright test",
+    "test": "CAPTCHA_DEBUG=1 npx playwright test tests/solving.spec.ts --grep \"Recaptcha\"",
     "prepublishOnly": "npm run build",
     "update-cli": "git -C CaptchaKraken-cli pull origin main"
   },

@@ -2,6 +2,14 @@
 
 A Patchright (Playwright) wrapper for [CaptchaKraken-cli](https://github.com/JWriter20/CaptchaKraken-cli) to solve captchas (Recaptcha, hCaptcha, Cloudflare Turnstile) using AI vision models.
 
+## Current Capabilities
+
+Right now, we can reliably solve:
+- **Checkbox captchas**: ~100% success rate
+- **Image captchas**: ~60% success rate (work in progress with finetuning vision models to improve this)
+
+Other kinds of captchas have not really been tested. Development will primarily focus on reCAPTCHA, Cloudflare Turnstile, and hCaptcha.
+
 ## Prerequisites
 
 1.  **Node.js** and **npm**.
