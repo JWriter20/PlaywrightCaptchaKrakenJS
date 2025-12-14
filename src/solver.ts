@@ -9,6 +9,26 @@ import { CaptchaKrakenConfig, SolverResult, ClickAction, CaptchaAction } from '.
 
 const execAsync = promisify(exec);
 
+function getBundledCliRoot(): string {
+  // When installed from npm, this file is in `<pkgRoot>/dist` (compiled) or `<pkgRoot>/src` (dev).
+  // The bundled python project sits at `<pkgRoot>/CaptchaKraken-cli`.
+  return path.resolve(__dirname, '..', 'CaptchaKraken-cli');
+}
+
+function getVenvPython(cliRoot: string): string | null {
+  const venvDir = path.join(cliRoot, '.venv');
+  const candidates = [
+    path.join(venvDir, 'bin', 'python'),
+    path.join(venvDir, 'bin', 'python3'),
+    path.join(venvDir, 'Scripts', 'python.exe'),
+    path.join(venvDir, 'Scripts', 'python'),
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
+}
+
 // Simple Vector interface for internal use
 interface Vector {
   x: number;
@@ -166,8 +186,20 @@ export class CaptchaKrakenSolver {
       apiKey = process.env.GEMINI_API_KEY
     } = this.config;
 
+    const cliRoot = repoPath ?? getBundledCliRoot();
+    if (!fs.existsSync(cliRoot)) {
+      throw new Error(
+        `CaptchaKraken CLI folder not found at ${cliRoot}. ` +
+        `If you installed from npm, ensure the package ships 'CaptchaKraken-cli/'.`
+      );
+    }
+
+    // Prefer the packaged venv python if present (postinstall bootstrap), otherwise fall back.
+    const venvPython = getVenvPython(cliRoot);
+    const py = venvPython ?? pythonCommand;
+
     const cmdParts = [
-      pythonCommand,
+      py,
       '-m',
       'src.cli',
       `"${imagePath}"`,
@@ -184,7 +216,8 @@ export class CaptchaKrakenSolver {
 
     try {
       const { stdout, stderr } = await execAsync(command, {
-        cwd: repoPath,
+        cwd: cliRoot,
+        env: process.env,
         maxBuffer: 10 * 1024 * 1024 // Increase buffer for large outputs if needed
       });
 

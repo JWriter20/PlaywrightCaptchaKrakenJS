@@ -13,7 +13,6 @@ export { CaptchaKrakenSolver } from './solver';
  * import { solve } from 'playwrightcaptchakrakenjs';
  * 
  * await solve(page, {
- *   repoPath: './CaptchaKraken-cli',
  *   apiKey: process.env.GEMINI_API_KEY
  * });
  * ```

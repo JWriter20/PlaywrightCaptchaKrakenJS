@@ -1,8 +1,11 @@
 export interface CaptchaKrakenConfig {
   /**
-   * Path to the CaptchaKraken-cli repository root.
+   * Path to the bundled CaptchaKraken CLI root.
+   *
+   * Usually you do NOT need to set this. If omitted, the solver will auto-resolve the
+   * `CaptchaKraken-cli/` directory shipped inside this npm package.
    */
-  repoPath: string;
+  repoPath?: string;
   /**
    * Command to run python (default: 'python' or 'python3').
    */

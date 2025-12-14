@@ -13,7 +13,7 @@ Other kinds of captchas have not really been tested. Development will primarily 
 ## Prerequisites
 
 1.  **Node.js** and **npm**.
-2.  **Python 3.8+** installed.
+2.  **Python 3.10+** installed.
 
 ## Installation
 
@@ -27,13 +27,11 @@ If you're cloning this repository, initialize the git submodule:
 git submodule update --init --recursive
 ```
 
-Then install the Python dependencies for CaptchaKraken-cli:
+On install, this package will automatically create a local venv at `CaptchaKraken-cli/.venv` and install
+Python dependencies via an `npm postinstall` hook.
 
-```bash
-cd CaptchaKraken-cli
-pip install -r requirements.txt
-cd ..
-```
+- **Skip python setup**: set `CAPTCHA_KRAKEN_SKIP_PYTHON_SETUP=1`
+- **Use a specific python**: set `CAPTCHA_KRAKEN_PYTHON=/path/to/python3`
 
 **Note:** Setup your environment variables (API keys) in `.env` if needed or pass them in config.
 
@@ -51,10 +49,10 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
   const solver = new CaptchaKrakenSolver({
     pythonCommand: 'python3',               // Python executable
     // Optional overrides:
-    // repoPath: './CaptchaKraken-cli',     // Default: './CaptchaKraken-cli'
+    // repoPath: '/absolute/path/to/CaptchaKraken-cli', // Usually not needed (auto-resolved from npm package)
     // model: 'gemini-2.5-flash-lite',      // Default
     // apiProvider: 'gemini',               // Default
-    // apiKey: 'YOUR_API_KEY'               // Defaults to process.env.GEMINI_API_KEY
+    // apiKey: 'YOUR_API_KEY',              // Defaults to process.env.GEMINI_API_KEY
   });
 
   await page.goto('https://www.google.com/recaptcha/api2/demo');
@@ -80,7 +78,7 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `repoPath` | `string` | `'./CaptchaKraken-cli'` | Path to the `CaptchaKraken-cli` directory. |
+| `repoPath` | `string` | *(auto)* | Path to the bundled `CaptchaKraken-cli` directory (usually not needed). |
 | `pythonCommand` | `string` | `'python'` | Python command to use. |
 | `model` | `string` | `'gemini-2.5-flash-lite'` | The vision model to use. |
 | `apiProvider` | `'ollama' \| 'gemini'` | `'gemini'` | The API provider. |
