@@ -59,16 +59,9 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 
   // Attempt to solve the captcha
   // This will detect the captcha, screenshot it, call the CLI, and execute clicks.
+  // It will also automatically re-check for newly opened next-step challenges
+  // (e.g., checkbox -> image grid) and keep solving until solved (or loop limit).
   await solver.solve(page);
-
-  // You might need to call solve() multiple times for multi-step captchas.
-  // Example loop:
-  /*
-  for (let i = 0; i < 3; i++) {
-    await solver.solve(page);
-    await page.waitForTimeout(2000);
-  }
-  */
 
   await browser.close();
 })();
@@ -83,6 +76,9 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 | `model` | `string` | `'gemini-2.5-flash-lite'` | The vision model to use. |
 | `apiProvider` | `'ollama' \| 'gemini'` | `'gemini'` | The API provider. |
 | `apiKey` | `string` | `process.env.GEMINI_API_KEY` | API Key (required for Gemini). |
+| `maxSolveLoops` | `number` | `10` | Max number of detect→solve iterations in a single `solve()` call. |
+| `postSolveDelayMs` | `number` | `1200` | Delay after each iteration before re-detecting. |
+| `overallSolveTimeoutMs` | `number` | `120000` | Overall time limit for the whole `solve()` call. |
 
 **Note:** A special finetuned AI model for improved accuracy will be available soon.
 

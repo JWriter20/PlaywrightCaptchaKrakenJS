@@ -60,7 +60,12 @@ const testWithSolver = test.extend<{ solver: CaptchaKrakenSolver }>({
       pythonCommand: PYTHON_COMMAND,
       model: MODEL,
       apiProvider: API_PROVIDER,
-      apiKey: API_KEY
+      apiKey: API_KEY,
+      // Multi-step captchas often require several iterations (checkbox -> challenge -> verify).
+      // The solver now loops internally; keep these generous for real-world tests.
+      maxSolveLoops: 15,
+      postSolveDelayMs: 2000,
+      overallSolveTimeoutMs: 180_000
     });
 
     await use(solver);
@@ -72,35 +77,10 @@ testWithSolver.describe('Real World Solving Tests', () => {
   testWithSolver.slow();
 
   testWithSolver('Recaptcha (Google Demo) - Solve', async ({ page, solver }) => {
-    await page.goto('https://google.com/recaptcha/api2/demo');
+    await page.goto('https://nopecha.com/captcha/recaptcha#moderate');
 
-    // Attempt to solve
+    // Attempt to solve (internal loop handles checkbox->challenge->verify)
     await solver.solve(page as any);
-
-    // If it was a challenge, we might need another solve loop or check.
-    // Usually the first click opens it, then we need to solve the images.
-    // The detectCaptcha inside solve() handles prioritizing the challenge if visible.
-
-    // Check if challenge appeared
-    const challengeFrame = await page.$('iframe[src*="recaptcha/api2/bframe"]');
-    if (challengeFrame && await challengeFrame.isVisible()) {
-      console.log('Challenge appeared, attempting to solve challenge grid...');
-      // Loop a few times for multi-step challenges
-      for (let i = 0; i < 15; i++) {
-        console.log(`\n--- Solve Attempt ${i + 1}/15 ---`);
-        await page.waitForTimeout(2000); // Wait for images to load/fade
-        // Check if we are done
-        const isChecked = await page.frames().find(f => f.url().includes('recaptcha/api2/anchor'))
-          ?.$('.recaptcha-checkbox-checked');
-
-        if (isChecked && await isChecked.isVisible()) {
-          console.log('Recaptcha checked!');
-          break;
-        }
-
-        await solver.solve(page as any);
-      }
-    }
 
     // Final Verification
     const anchorFrame = page.frames().find(f => f.url().includes('recaptcha/api2/anchor'));
@@ -111,32 +91,8 @@ testWithSolver.describe('Real World Solving Tests', () => {
   testWithSolver('hCaptcha (Demo) - Solve', async ({ page, solver }) => {
     await page.goto('https://democaptcha.com/demo-form-eng/hcaptcha.html');
 
-    // 1. Click checkbox (handled by solve detection priority)
+    // Attempt to solve (internal loop handles checkbox->challenge->verify)
     await solver.solve(page as any);
-
-    // 2. Wait for challenge
-    try {
-      await page.waitForSelector('iframe[src*="hcaptcha.com"][src*="frame=challenge"]', { timeout: 5000 });
-    } catch {
-      // Maybe it just checked instantly (low security env)
-    }
-
-    // 3. Loop solve
-    for (let i = 0; i < 15; i++) {
-      console.log(`\n--- hCaptcha Attempt ${i + 1}/15 ---`);
-      await page.waitForTimeout(2000);
-
-      // Check success in response field
-      const response = await page.$eval('[name="h-captcha-response"]', el => (el as HTMLTextAreaElement).value);
-      if (response) {
-        console.log('hCaptcha solved! Token:', response.substring(0, 20) + '...');
-        break;
-      }
-
-      // Detect and solve
-      // If challenge is closed/done, solve() might log "No supported captcha found" and return
-      await solver.solve(page as any);
-    }
 
     const response = await page.$eval('[name="h-captcha-response"]', el => (el as HTMLTextAreaElement).value);
     expect(response).toBeTruthy();

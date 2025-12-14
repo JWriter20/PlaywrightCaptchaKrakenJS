@@ -22,6 +22,29 @@ export interface CaptchaKrakenConfig {
    * API Key for the provider (if required).
    */
   apiKey?: string;
+
+  /**
+   * Automatically re-check for newly opened / next-step captchas after each solve
+   * attempt (e.g., clicking a checkbox opens an image challenge).
+   *
+   * Default: 10
+   */
+  maxSolveLoops?: number;
+
+  /**
+   * Delay (ms) after executing actions before re-detecting captchas.
+   * Useful to allow challenge frames / new images to appear.
+   *
+   * Default: 1200
+   */
+  postSolveDelayMs?: number;
+
+  /**
+   * Overall time limit (ms) for the entire solve loop.
+   *
+   * Default: 120000 (2 minutes)
+   */
+  overallSolveTimeoutMs?: number;
 }
 
 export interface BoundingBox {

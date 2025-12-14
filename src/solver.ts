@@ -53,22 +53,55 @@ export class CaptchaKrakenSolver {
   }
 
   async solve(page: Page): Promise<void> {
-    // 1. Detect Captcha
-    const captchaElement = await this.detectCaptcha(page);
-    if (!captchaElement) {
-      console.log('No supported captcha found.');
-      return;
+    const maxSolveLoops = this.config.maxSolveLoops ?? 10;
+    const postSolveDelayMs = this.config.postSolveDelayMs ?? 1200;
+    const overallSolveTimeoutMs = this.config.overallSolveTimeoutMs ?? 120_000;
+
+    const start = Date.now();
+
+    for (let attempt = 1; attempt <= maxSolveLoops; attempt++) {
+      if (Date.now() - start > overallSolveTimeoutMs) {
+        throw new Error(`Captcha solve timed out after ${overallSolveTimeoutMs}ms (attempt ${attempt}/${maxSolveLoops}).`);
+      }
+
+      const captchaElement = await this.detectCaptcha(page);
+      if (!captchaElement) {
+        console.log('No supported captcha found.');
+        return;
+      }
+
+      console.log(`\n--- Captcha Solve Loop ${attempt}/${maxSolveLoops} ---`);
+      const didInteract = await this.solveSingle(page, captchaElement);
+
+      // Let the page update (challenge frame open, images refresh, verification, etc.)
+      await delay(postSolveDelayMs + Math.random() * 300);
+
+      const after = await this.detectCaptcha(page);
+      if (!after) {
+        return;
+      }
+
+      // If we didn't actually interact and captcha is still detected, don't spin forever.
+      if (!didInteract) {
+        throw new Error('Captcha still detected but solver performed no interactions; aborting to avoid an infinite loop.');
+      }
     }
 
-    // 2. Take Screenshot
-    const screenshotPath = path.join(os.tmpdir(), `captcha_${Date.now()}.png`);
+    throw new Error(`Captcha still detected after ${maxSolveLoops} solve loops.`);
+  }
+
+  private async solveSingle(page: Page, captchaElement: ElementHandle): Promise<boolean> {
+    // 1. Take Screenshot
+    const screenshotPath = path.join(os.tmpdir(), `captcha_${Date.now()}_${Math.floor(Math.random() * 1e9)}.png`);
     await captchaElement.screenshot({ path: screenshotPath });
 
+    let performedAction = false;
+
     try {
-      // 3. Call CLI
+      // 2. Call CLI
       const actions = await this.getSolution(screenshotPath);
 
-      // 4. Execute Actions
+      // 3. Execute Actions
       const actionList = Array.isArray(actions) ? actions : [actions];
 
       // We need the element's bounding box to translate coordinates
@@ -79,7 +112,6 @@ export class CaptchaKrakenSolver {
 
       console.log(`Executing ${actionList.length} actions.`);
 
-      let performedAction = false;
       for (const action of actionList) {
         if (action.action === 'click') {
           await this.executeClick(page, captchaElement, action as ClickAction, elementBox);
@@ -87,9 +119,9 @@ export class CaptchaKrakenSolver {
           await delay(Math.random() * 500 + 200);
           performedAction = true;
         } else if (action.action === 'wait') {
-          if (action.duration_ms > 0) {
-            console.log(`Waiting for ${action.duration_ms}ms as requested by CLI`);
-            await delay(action.duration_ms);
+          if ((action as any).duration_ms > 0) {
+            console.log(`Waiting for ${(action as any).duration_ms}ms as requested by CLI`);
+            await delay((action as any).duration_ms);
             performedAction = true;
           }
         }
@@ -103,33 +135,39 @@ export class CaptchaKrakenSolver {
           const buttonTexts = ['Verify', 'Next', 'Submit', 'Skip'];
           for (const text of buttonTexts) {
             try {
-              // Using XPath to find buttons or inputs with specific text/value
-              // Case insensitive contains for text, or value attribute
-              const btn = await contentFrame.$(`xpath=//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')] | //div[@role="button" and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')]`);
+              // Case-insensitive contains for text
+              const btn = await contentFrame.$(
+                `xpath=//button[contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')] | //div[@role="button" and contains(translate(., 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), '${text.toLowerCase()}')]`
+              );
               if (btn && await btn.isVisible()) {
                 console.log(`Clicking button with text "${text}"`);
                 await this.moveAndClick(page, btn);
-                return;
+                performedAction = true;
+                break;
               }
             } catch (e) {
               // Ignore locator errors
             }
           }
 
-          // 2. Try specific ID (Recaptcha)
-          const recaptchaVerify = await contentFrame.$('#recaptcha-verify-button');
-          if (recaptchaVerify && await recaptchaVerify.isVisible()) {
-            console.log('Clicking Recaptcha Verify/Next button by ID');
-            await this.moveAndClick(page, recaptchaVerify);
-            return;
+          if (!performedAction) {
+            // 2. Try specific ID (Recaptcha)
+            const recaptchaVerify = await contentFrame.$('#recaptcha-verify-button');
+            if (recaptchaVerify && await recaptchaVerify.isVisible()) {
+              console.log('Clicking Recaptcha Verify/Next button by ID');
+              await this.moveAndClick(page, recaptchaVerify);
+              performedAction = true;
+            }
           }
 
-          // 3. Try specific class (hCaptcha)
-          const hcaptchaVerify = await contentFrame.$('.button-submit');
-          if (hcaptchaVerify && await hcaptchaVerify.isVisible()) {
-            console.log('Clicking hCaptcha Verify/Submit button by Class');
-            await this.moveAndClick(page, hcaptchaVerify);
-            return;
+          if (!performedAction) {
+            // 3. Try specific class (hCaptcha)
+            const hcaptchaVerify = await contentFrame.$('.button-submit');
+            if (hcaptchaVerify && await hcaptchaVerify.isVisible()) {
+              console.log('Clicking hCaptcha Verify/Submit button by Class');
+              await this.moveAndClick(page, hcaptchaVerify);
+              performedAction = true;
+            }
           }
         }
       }
@@ -138,6 +176,33 @@ export class CaptchaKrakenSolver {
       if (fs.existsSync(screenshotPath)) {
         fs.unlinkSync(screenshotPath);
       }
+    }
+
+    return performedAction;
+  }
+
+  private async hasNonEmptyFieldValue(page: Page, selector: string): Promise<boolean> {
+    try {
+      const el = await page.$(selector);
+      if (!el) return false;
+      const value = await page.$eval(selector, node => {
+        const anyNode = node as any;
+        return typeof anyNode.value === 'string' ? anyNode.value : '';
+      });
+      return typeof value === 'string' && value.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isRecaptchaAnchorChecked(anchorIframe: ElementHandle): Promise<boolean> {
+    try {
+      const frame = await anchorIframe.contentFrame();
+      if (!frame) return false;
+      const checked = await frame.$('.recaptcha-checkbox-checked');
+      return !!(checked && await checked.isVisible());
+    } catch {
+      return false;
     }
   }
 
@@ -159,20 +224,34 @@ export class CaptchaKrakenSolver {
 
     // Recaptcha Checkbox
     const recaptchaCheckbox = await page.$('iframe[src*="recaptcha/api2/anchor"]');
-    if (recaptchaCheckbox && await recaptchaCheckbox.isVisible()) return recaptchaCheckbox;
+    if (recaptchaCheckbox && await recaptchaCheckbox.isVisible()) {
+      // If it's already checked, consider it solved and continue searching.
+      const checked = await this.isRecaptchaAnchorChecked(recaptchaCheckbox);
+      if (!checked) return recaptchaCheckbox;
+    }
 
     // hCaptcha Checkbox
     const hcaptchaCheckbox = await page.$('iframe[src*="hcaptcha.com"]:not([title*="challenge"])');
-    if (hcaptchaCheckbox && await hcaptchaCheckbox.isVisible()) return hcaptchaCheckbox;
+    if (hcaptchaCheckbox && await hcaptchaCheckbox.isVisible()) {
+      // If we already have a token, treat as solved and continue searching.
+      const hasToken = await this.hasNonEmptyFieldValue(page, '[name="h-captcha-response"]');
+      if (!hasToken) return hcaptchaCheckbox;
+    }
 
     // Cloudflare Turnstile
     // Try iframe first (if visible/open)
     const cloudflareIframe = await page.$('iframe[src*="challenges.cloudflare.com"]');
-    if (cloudflareIframe && await cloudflareIframe.isVisible()) return cloudflareIframe;
+    if (cloudflareIframe && await cloudflareIframe.isVisible()) {
+      const hasToken = await this.hasNonEmptyFieldValue(page, '[name="cf-turnstile-response"]');
+      if (!hasToken) return cloudflareIframe;
+    }
 
     // Fallback to container for closed shadow roots
     const cloudflareContainer = await page.$('.cf-turnstile');
-    if (cloudflareContainer && await cloudflareContainer.isVisible()) return cloudflareContainer;
+    if (cloudflareContainer && await cloudflareContainer.isVisible()) {
+      const hasToken = await this.hasNonEmptyFieldValue(page, '[name="cf-turnstile-response"]');
+      if (!hasToken) return cloudflareContainer;
+    }
 
     return null;
   }
