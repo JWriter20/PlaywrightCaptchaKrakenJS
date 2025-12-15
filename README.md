@@ -47,12 +47,12 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
   
   // Configure the solver
   const solver = new CaptchaKrakenSolver({
-    pythonCommand: 'python3',               // Python executable
     // Optional overrides:
     // repoPath: '/absolute/path/to/CaptchaKraken-cli', // Usually not needed (auto-resolved from npm package)
     // model: 'gemini-2.5-flash-lite',      // Default
     // apiProvider: 'gemini',               // Default
     // apiKey: 'YOUR_API_KEY',              // Defaults to process.env.GEMINI_API_KEY
+    // pythonCommand: 'python3',            // Usually not needed (auto-uses venv python)
   });
 
   await page.goto('https://www.google.com/recaptcha/api2/demo');
@@ -72,7 +72,7 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `repoPath` | `string` | *(auto)* | Path to the bundled `CaptchaKraken-cli` directory (usually not needed). |
-| `pythonCommand` | `string` | `'python'` | Python command to use. |
+| `pythonCommand` | `string` | *(auto)* | Python command to use. Usually not needed - automatically uses the venv python created during installation. |
 | `model` | `string` | `'gemini-2.5-flash-lite'` | The vision model to use. |
 | `apiProvider` | `'ollama' \| 'gemini'` | `'gemini'` | The API provider. |
 | `apiKey` | `string` | `process.env.GEMINI_API_KEY` | API Key (required for Gemini). |
@@ -80,7 +80,14 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 | `postSolveDelayMs` | `number` | `1200` | Delay after each iteration before re-detecting. |
 | `overallSolveTimeoutMs` | `number` | `120000` | Overall time limit for the whole `solve()` call. |
 
-**Note:** A special finetuned AI model for improved accuracy will be available soon.
+## Coming Soon
+
+We're actively working on several improvements to enhance the solver's capabilities:
+
+- **OpenRouter integration**: Support for OpenRouter API, enabling you to use any vision model available on their platform (GPT-4 Vision, Claude, etc.)
+- **Stronger default model**: Replacing `gemini-2.5-flash-lite` with a more capable default model that better handles complex image recognition tasks
+- **Improved reCAPTCHA accuracy**: Finetuned custom model to boost reCAPTCHA image captcha success rate from ~60% to 95%+
+- **hCaptcha complex drag puzzle solving**: Full support for hCaptcha's drag-and-drop puzzle challenges
 
 ## Testing
 
