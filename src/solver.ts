@@ -47,6 +47,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 export class CaptchaKrakenSolver {
   private config: CaptchaKrakenConfig;
   private lastMousePosition: Vector = { x: 100, y: 100 }; // Start at safe position
+  private imageCounter: number = 0; // Track images sent to CLI for debugging
 
   constructor(config: CaptchaKrakenConfig) {
     this.config = config;
@@ -94,6 +95,9 @@ export class CaptchaKrakenSolver {
     // 1. Take Screenshot
     const screenshotPath = path.join(os.tmpdir(), `captcha_${Date.now()}_${Math.floor(Math.random() * 1e9)}.png`);
     await captchaElement.screenshot({ path: screenshotPath });
+
+    // Save image to debug directory if debugging is enabled
+    this.saveImageForDebug(screenshotPath);
 
     let performedAction = false;
 
@@ -254,6 +258,39 @@ export class CaptchaKrakenSolver {
     }
 
     return null;
+  }
+
+  private saveImageForDebug(imagePath: string): void {
+    // Check if CAPTCHA_DEBUG is enabled
+    const debugEnabled = process.env.CAPTCHA_DEBUG === '1';
+    if (!debugEnabled) {
+      return;
+    }
+
+    try {
+      const cliRoot = this.config.repoPath ?? getBundledCliRoot();
+      // Save input images to a separate directory that won't be cleared by the Python CLI
+      // The Python CLI clears latestDebugRun, so we use a sibling directory
+      const inputImagesDir = path.join(cliRoot, 'latestDebugRun_inputs');
+
+      // Ensure input images directory exists
+      if (!fs.existsSync(inputImagesDir)) {
+        fs.mkdirSync(inputImagesDir, { recursive: true });
+      }
+
+      // Increment counter and save with a descriptive name
+      this.imageCounter++;
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      const debugImageName = `input_${String(this.imageCounter).padStart(3, '0')}_${timestamp}.png`;
+      const debugImagePath = path.join(inputImagesDir, debugImageName);
+
+      // Copy the image to debug directory
+      fs.copyFileSync(imagePath, debugImagePath);
+      console.log(`[DEBUG] Saved input image to: ${debugImagePath}`);
+    } catch (error) {
+      // Don't fail the solve if debug save fails
+      console.warn(`[DEBUG] Failed to save image for debugging: ${error}`);
+    }
   }
 
   private async getSolution(imagePath: string): Promise<SolverResult> {
