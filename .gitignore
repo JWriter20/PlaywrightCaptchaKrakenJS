@@ -6,3 +6,5 @@ dist
 .npmrc
 test-results
 playwright-report
+debug_runs/
+test_logs/

@@ -1,5 +1,7 @@
 # PlaywrightCaptchaKrakenJS
 
+> ⭐ If this captcha solver was useful to you, please leave a star on [GitHub](https://github.com/JWriter20/PlaywrightCaptchaKrakenJS)!
+
 A Patchright (Playwright) wrapper for [CaptchaKraken-cli](https://github.com/JWriter20/CaptchaKraken-cli) to solve captchas (Recaptcha, hCaptcha, Cloudflare Turnstile) using AI vision models.
 
 ## Current Capabilities
@@ -73,9 +75,9 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 |---|---|---|---|
 | `repoPath` | `string` | *(auto)* | Path to the bundled `CaptchaKraken-cli` directory (usually not needed). |
 | `pythonCommand` | `string` | *(auto)* | Python command to use. Usually not needed - automatically uses the venv python created during installation. |
-| `model` | `string` | `'gemini-2.5-flash-lite'` | The vision model to use. |
-| `apiProvider` | `'ollama' \| 'gemini'` | `'gemini'` | The API provider. |
-| `apiKey` | `string` | `process.env.GEMINI_API_KEY` | API Key (required for Gemini). |
+| `model` | `string` | `'gemini-2.5-flash-lite'` (Gemini) or `'google/gemini-2.0-flash-lite-preview-02-05:free'` (OpenRouter) | The vision model to use. |
+| `apiProvider` | `'ollama' \| 'gemini' \| 'openrouter'` | `'gemini'` | The API provider. |
+| `apiKey` | `string` | `process.env.GEMINI_API_KEY` or `process.env.OPENROUTER_KEY` | API Key (required for Gemini and OpenRouter). |
 | `maxSolveLoops` | `number` | `10` | Max number of detect→solve iterations in a single `solve()` call. |
 | `postSolveDelayMs` | `number` | `1200` | Delay after each iteration before re-detecting. |
 | `overallSolveTimeoutMs` | `number` | `120000` | Overall time limit for the whole `solve()` call. |
@@ -84,7 +86,6 @@ import { CaptchaKrakenSolver } from 'playwright-captcha-kraken-js';
 
 We're actively working on several improvements to enhance the solver's capabilities:
 
-- **OpenRouter integration**: Support for OpenRouter API, enabling you to use any vision model available on their platform (GPT-4 Vision, Claude, etc.)
 - **Stronger default model**: Replacing `gemini-2.5-flash-lite` with a more capable default model that better handles complex image recognition tasks
 - **Improved reCAPTCHA accuracy**: Finetuned custom model to boost reCAPTCHA image captcha success rate from ~60% to 95%+
 - **hCaptcha complex drag puzzle solving**: Full support for hCaptcha's drag-and-drop puzzle challenges

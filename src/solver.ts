@@ -5,7 +5,8 @@ import { promisify } from 'util';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { CaptchaKrakenConfig, SolverResult, ClickAction, CaptchaAction } from './types';
+import { CaptchaKrakenConfig, SolverResult, ClickAction, CaptchaAction, SolveResult, CliResponse, TokenUsage, Vector } from './types';
+import { aggregateTokenUsage } from './token-usage';
 
 const execAsync = promisify(exec);
 
@@ -29,11 +30,7 @@ function getVenvPython(cliRoot: string): string | null {
   return null;
 }
 
-// Simple Vector interface for internal use
-interface Vector {
-  x: number;
-  y: number;
-}
+// Simple Vector interface for internal use moved to types.ts
 
 interface TimedVector {
   x: number;
@@ -46,19 +43,36 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
 export class CaptchaKrakenSolver {
   private config: CaptchaKrakenConfig;
-  private lastMousePosition: Vector = { x: 100, y: 100 }; // Start at safe position
+  private lastMousePosition: Vector; // Start at safe position
   private imageCounter: number = 0; // Track images sent to CLI for debugging
+  private sessionDebugDir: string | null = null;
 
   constructor(config: CaptchaKrakenConfig) {
     this.config = config;
+    this.lastMousePosition = config.startingMousePosition ?? { x: 100, y: 100 };
   }
 
-  async solve(page: Page): Promise<void> {
+  async solve(page: Page): Promise<SolveResult | void> {
     const maxSolveLoops = this.config.maxSolveLoops ?? 10;
     const postSolveDelayMs = this.config.postSolveDelayMs ?? 1200;
     const overallSolveTimeoutMs = this.config.overallSolveTimeoutMs ?? 120_000;
 
     const start = Date.now();
+    let cumulativeTokenUsage: TokenUsage[] = [];
+    this.imageCounter = 0;
+
+    // Initialize session debug directory if debugging is enabled
+    if (process.env.CAPTCHA_DEBUG === '1') {
+      const cliRoot = this.config.repoPath ?? getBundledCliRoot();
+      const debugRunsDir = path.join(cliRoot, '..', 'debug_runs');
+      if (!fs.existsSync(debugRunsDir)) {
+        fs.mkdirSync(debugRunsDir, { recursive: true });
+      }
+      const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+      this.sessionDebugDir = path.join(debugRunsDir, `solve_${timestamp}`);
+      fs.mkdirSync(this.sessionDebugDir, { recursive: true });
+      log(`Session debug directory: ${this.sessionDebugDir}`);
+    }
 
     for (let attempt = 1; attempt <= maxSolveLoops; attempt++) {
       if (Date.now() - start > overallSolveTimeoutMs) {
@@ -68,30 +82,39 @@ export class CaptchaKrakenSolver {
       const captchaElement = await this.detectCaptcha(page);
       if (!captchaElement) {
         console.log('No supported captcha found.');
-        return;
+        return {
+          isSolved: true,
+          finalMousePosition: this.lastMousePosition,
+          tokenUsage: aggregateTokenUsage(cumulativeTokenUsage)
+        };
       }
 
       console.log(`\n--- Captcha Solve Loop ${attempt}/${maxSolveLoops} ---`);
-      const didInteract = await this.solveSingle(page, captchaElement);
+      const { didInteract, tokenUsage } = await this.solveSingle(page, captchaElement, attempt);
+      cumulativeTokenUsage.push(...tokenUsage);
 
       // Let the page update (challenge frame open, images refresh, verification, etc.)
       await delay(postSolveDelayMs + Math.random() * 300);
 
       const after = await this.detectCaptcha(page);
       if (!after) {
-        return;
+        return {
+          isSolved: true,
+          finalMousePosition: this.lastMousePosition,
+          tokenUsage: aggregateTokenUsage(cumulativeTokenUsage)
+        };
       }
 
       // If we didn't actually interact and captcha is still detected, don't spin forever.
       if (!didInteract) {
-        throw new Error('Captcha still detected but solver performed no interactions; aborting to avoid an infinite loop.');
+        throw new Error(`Captcha still detected but solver performed no interactions; aborting to avoid an infinite loop. Total usage: ${JSON.stringify(aggregateTokenUsage(cumulativeTokenUsage))}`);
       }
     }
 
-    throw new Error(`Captcha still detected after ${maxSolveLoops} solve loops.`);
+    throw new Error(`Captcha still detected after ${maxSolveLoops} solve loops. Total usage: ${JSON.stringify(aggregateTokenUsage(cumulativeTokenUsage))}`);
   }
 
-  private async solveSingle(page: Page, captchaElement: ElementHandle): Promise<boolean> {
+  private async solveSingle(page: Page, captchaElement: ElementHandle, attempt: number): Promise<{ didInteract: boolean, tokenUsage: TokenUsage[] }> {
     // 1. Take Screenshot
     const screenshotPath = path.join(os.tmpdir(), `captcha_${Date.now()}_${Math.floor(Math.random() * 1e9)}.png`);
     await captchaElement.screenshot({ path: screenshotPath });
@@ -100,10 +123,16 @@ export class CaptchaKrakenSolver {
     this.saveImageForDebug(screenshotPath);
 
     let performedAction = false;
+    let allTokenUsage: TokenUsage[] = [];
 
     try {
       // 2. Call CLI
-      const actions = await this.getSolution(screenshotPath);
+      const response = await this.getSolution(screenshotPath);
+      const actions = response.actions;
+      allTokenUsage = response.token_usage;
+
+      // Archive debug artifacts if enabled
+      this.archiveLatestDebugRun(attempt, actions);
 
       // 3. Execute Actions
       const actionList = Array.isArray(actions) ? actions : [actions];
@@ -120,7 +149,7 @@ export class CaptchaKrakenSolver {
         if (action.action === 'click') {
           await this.executeClick(page, captchaElement, action as ClickAction, elementBox);
           // Small delay between clicks
-          await delay(Math.random() * 500 + 200);
+          await delay(Math.random() * 20 + 30);
           performedAction = true;
         } else if (action.action === 'wait') {
           if ((action as any).duration_ms > 0) {
@@ -132,6 +161,7 @@ export class CaptchaKrakenSolver {
       }
 
       if (!performedAction) {
+        // ... existing button clicking code ...
         console.log('No active actions performed (empty or done). Checking for Verify/Next button...');
         const contentFrame = await captchaElement.contentFrame();
         if (contentFrame) {
@@ -182,7 +212,7 @@ export class CaptchaKrakenSolver {
       }
     }
 
-    return performedAction;
+    return { didInteract: performedAction, tokenUsage: allTokenUsage };
   }
 
   private async hasNonEmptyFieldValue(page: Page, selector: string): Promise<boolean> {
@@ -293,13 +323,50 @@ export class CaptchaKrakenSolver {
     }
   }
 
-  private async getSolution(imagePath: string): Promise<SolverResult> {
+  private archiveLatestDebugRun(attempt: number, actions: SolverResult): void {
+    if (!this.sessionDebugDir) return;
+
+    try {
+      const cliRoot = this.config.repoPath ?? getBundledCliRoot();
+      const latestDebugDir = path.join(cliRoot, 'latestDebugRun');
+      const inputImagesDir = path.join(cliRoot, 'latestDebugRun_inputs');
+
+      const attemptDir = path.join(this.sessionDebugDir, `attempt_${attempt}`);
+      fs.mkdirSync(attemptDir, { recursive: true });
+
+      // Archive CLI artifacts if they exist
+      if (fs.existsSync(latestDebugDir)) {
+        fs.cpSync(latestDebugDir, attemptDir, { recursive: true });
+        fs.rmSync(latestDebugDir, { recursive: true, force: true });
+      }
+
+      // Archive input images if they exist
+      if (fs.existsSync(inputImagesDir)) {
+        const archivedInputsDir = path.join(attemptDir, 'inputs');
+        fs.mkdirSync(archivedInputsDir, { recursive: true });
+        fs.cpSync(inputImagesDir, archivedInputsDir, { recursive: true });
+        fs.rmSync(inputImagesDir, { recursive: true, force: true });
+      }
+
+      // Add actions info to the attempt directory
+      fs.writeFileSync(
+        path.join(attemptDir, 'actions_result.json'),
+        JSON.stringify(actions, null, 2)
+      );
+
+      console.log(`[DEBUG] Archived attempt ${attempt} debug artifacts to: ${attemptDir}`);
+    } catch (error) {
+      console.warn(`[DEBUG] Failed to archive debug artifacts: ${error}`);
+    }
+  }
+
+  private async getSolution(imagePath: string): Promise<CliResponse> {
     const {
       repoPath,
       pythonCommand = 'python',
-      model = 'gemini-2.5-flash-lite',
       apiProvider = 'gemini',
-      apiKey = process.env.GEMINI_API_KEY
+      model = apiProvider === 'openrouter' ? 'google/gemini-2.0-flash-lite-preview-02-05:free' : 'gemini-2.5-flash-lite',
+      apiKey = apiProvider === 'openrouter' ? process.env.OPENROUTER_KEY : (apiProvider === 'gemini' ? process.env.GEMINI_API_KEY : undefined)
     } = this.config;
 
     const cliRoot = repoPath ?? getBundledCliRoot();
@@ -348,40 +415,32 @@ export class CaptchaKrakenSolver {
 
       try {
         const lines = stdout.trim().split('\n');
-        const allActions: any[] = [];
-        let foundAny = false;
+        let actions: SolverResult = [];
+        let tokenUsage: TokenUsage[] = [];
 
         for (const line of lines) {
           try {
             const parsed = JSON.parse(line);
+
+            // Handle new format { actions: ..., token_usage: ... }
+            if (parsed.actions !== undefined && parsed.token_usage !== undefined) {
+              actions = parsed.actions;
+              tokenUsage = parsed.token_usage;
+              break;
+            }
+
+            // Fallback for old format or list of actions
             if (Array.isArray(parsed)) {
-              allActions.push(...parsed);
-              foundAny = true;
+              actions = parsed;
             } else if (parsed.action && (parsed.target_bounding_box || parsed.target_coordinates || parsed.action === 'wait')) {
-              allActions.push(parsed);
-              foundAny = true;
+              actions = [parsed];
             }
           } catch (e) {
             // Not json or not relevant
           }
         }
 
-        if (!foundAny) {
-          try {
-            const parsed = JSON.parse(stdout);
-            if (Array.isArray(parsed)) {
-              allActions.push(...parsed);
-            } else if (parsed.action && (parsed.target_bounding_box || parsed.target_coordinates)) {
-              allActions.push(parsed);
-            }
-          } catch (e) {
-            // Ignore
-          }
-        }
-
-        console.log('CaptchaKraken parsed result:', JSON.stringify(allActions, null, 2));
-
-        return allActions as SolverResult;
+        return { actions, token_usage: tokenUsage };
       } catch (parseError) {
         throw new Error(`Failed to parse CLI output: ${stdout}\nStderr: ${stderr}`);
       }
@@ -433,7 +492,7 @@ export class CaptchaKrakenSolver {
   async moveAndClick(page: Page, element: ElementHandle) {
     await this.move(page, element);
     await page.mouse.down();
-    await delay(Math.random() * 50 + 20);
+    await delay(Math.random() * 20 + 20);
     await page.mouse.up();
   }
 

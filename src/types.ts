@@ -17,11 +17,18 @@ export interface CaptchaKrakenConfig {
   /**
    * API provider (default: 'gemini').
    */
-  apiProvider?: 'ollama' | 'gemini';
+  apiProvider?: 'ollama' | 'gemini' | 'openrouter';
   /**
    * API Key for the provider (if required).
    */
   apiKey?: string;
+
+  /**
+   * Starting mouse position (default: { x: 100, y: 100 }).
+   * HIGHLY RECOMMENDED to set this, prevents jumping around of the cursor when solving.
+   */
+  startingMousePosition?: { x: number, y: number };
+
 
   /**
    * Automatically re-check for newly opened / next-step captchas after each solve
@@ -69,3 +76,32 @@ export interface WaitAction {
 export type CaptchaAction = ClickAction | WaitAction;
 
 export type SolverResult = CaptchaAction | CaptchaAction[];
+
+export interface TokenUsage {
+  input_tokens: number;
+  output_tokens: number;
+  cached_input_tokens?: number;
+  model: string;
+}
+
+export interface CliResponse {
+  actions: SolverResult;
+  token_usage: TokenUsage[];
+}
+
+export interface Vector {
+  x: number;
+  y: number;
+}
+
+export interface SolveResult {
+  isSolved: boolean;
+  finalMousePosition: Vector;
+  tokenUsage: {
+    modelName: string;
+    inputTokens: number;
+    outputTokens: number;
+    cachedInputTokens: number;
+    estimatedCost: number;
+  };
+}
