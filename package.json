@@ -1,6 +1,6 @@
 {
   "name": "playwright-captcha-kraken-js",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Playwright wrapper which uses CaptchaKraken-cli to solve captchas.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",

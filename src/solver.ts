@@ -115,19 +115,35 @@ export class CaptchaKrakenSolver {
   }
 
   private async solveSingle(page: Page, captchaElement: ElementHandle, attempt: number): Promise<{ didInteract: boolean, tokenUsage: TokenUsage[] }> {
-    // 1. Take Screenshot
-    const screenshotPath = path.join(os.tmpdir(), `captcha_${Date.now()}_${Math.floor(Math.random() * 1e9)}.png`);
-    await captchaElement.screenshot({ path: screenshotPath });
+    // 1. Take initial Screenshot to detect movement
+    const initialScreenshotPath = path.join(os.tmpdir(), `captcha_init_${Date.now()}.png`);
+    await captchaElement.screenshot({ path: initialScreenshotPath });
 
-    // Save image to debug directory if debugging is enabled
-    this.saveImageForDebug(screenshotPath);
+    let inputPath = initialScreenshotPath;
+    let isVideo = false;
+
+    // Check for movement
+    const hasMovement = await this.checkMovement(captchaElement, initialScreenshotPath);
+    if (hasMovement) {
+      console.log('Movement detected in captcha, capturing video...');
+      try {
+        const videoPath = await this.captureVideo(captchaElement);
+        inputPath = videoPath;
+        isVideo = true;
+      } catch (e) {
+        console.warn('Failed to capture video, falling back to image:', e);
+      }
+    }
+
+    // Save input to debug directory if debugging is enabled
+    this.saveImageForDebug(inputPath);
 
     let performedAction = false;
     let allTokenUsage: TokenUsage[] = [];
 
     try {
-      // 2. Call CLI
-      const response = await this.getSolution(screenshotPath);
+      // 2. Call CLI with either image or video
+      const response = await this.getSolution(inputPath);
       const actions = response.actions;
       allTokenUsage = response.token_usage;
 
@@ -207,12 +223,76 @@ export class CaptchaKrakenSolver {
       }
     } finally {
       // Cleanup
-      if (fs.existsSync(screenshotPath)) {
-        fs.unlinkSync(screenshotPath);
+      if (fs.existsSync(initialScreenshotPath)) {
+        fs.unlinkSync(initialScreenshotPath);
+      }
+      if (inputPath !== initialScreenshotPath && fs.existsSync(inputPath)) {
+        fs.unlinkSync(inputPath);
       }
     }
 
     return { didInteract: performedAction, tokenUsage: allTokenUsage };
+  }
+
+  private async checkMovement(captchaElement: ElementHandle, firstScreenshotPath: string): Promise<boolean> {
+    const secondScreenshotPath = path.join(os.tmpdir(), `captcha_check_${Date.now()}.png`);
+    await delay(150); // Wait a bit for movement
+    try {
+      await captchaElement.screenshot({ path: secondScreenshotPath });
+    } catch (e) {
+      return false; // Element might have disappeared
+    }
+
+    try {
+      const cliRoot = this.config.repoPath ?? getBundledCliRoot();
+      const venvPython = getVenvPython(cliRoot);
+      const py = venvPython ?? (this.config.pythonCommand || 'python');
+
+      const command = `${py} -m src.cli check-movement "${firstScreenshotPath}" "${secondScreenshotPath}"`;
+      const { stdout } = await execAsync(command, { cwd: cliRoot });
+      const result = JSON.parse(stdout);
+      return !!result.has_movement;
+    } catch (e) {
+      console.warn('Movement check failed, assuming static:', e);
+      return false;
+    } finally {
+      if (fs.existsSync(secondScreenshotPath)) fs.unlinkSync(secondScreenshotPath);
+    }
+  }
+
+  private async captureVideo(captchaElement: ElementHandle): Promise<string> {
+    const framesDir = path.join(os.tmpdir(), `captcha_frames_${Date.now()}`);
+    fs.mkdirSync(framesDir, { recursive: true });
+
+    const videoPath = path.join(os.tmpdir(), `captcha_video_${Date.now()}.webm`);
+
+    try {
+      // Capture 4 frames
+      for (let i = 0; i < 4; i++) {
+        await captchaElement.screenshot({ path: path.join(framesDir, `frame_${i}.png`) });
+        if (i < 3) await delay(100);
+      }
+
+      // Use ffmpeg to create a webm video
+      // -framerate 5: 5 frames per second
+      // -i frame_%d.png: input pattern
+      // -c:v libvpx-vp9: codec
+      // -crf 35: quality (reasonable for small files)
+      // -b:v 0: required for CRF in vp9
+      // -vf scale: downscale for speed if needed
+      const command = `ffmpeg -y -framerate 5 -i "${path.join(framesDir, 'frame_%d.png')}" -c:v libvpx-vp9 -crf 35 -b:v 0 -vf "scale='min(400,iw)':-1" "${videoPath}"`;
+      await execAsync(command);
+
+      return videoPath;
+    } catch (e) {
+      console.error('ffmpeg failed:', e);
+      throw e;
+    } finally {
+      // Cleanup frames
+      if (fs.existsSync(framesDir)) {
+        fs.rmSync(framesDir, { recursive: true, force: true });
+      }
+    }
   }
 
   private async hasNonEmptyFieldValue(page: Page, selector: string): Promise<boolean> {
@@ -311,7 +391,8 @@ export class CaptchaKrakenSolver {
       // Increment counter and save with a descriptive name
       this.imageCounter++;
       const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
-      const debugImageName = `input_${String(this.imageCounter).padStart(3, '0')}_${timestamp}.png`;
+      const extension = path.extname(imagePath) || '.png';
+      const debugImageName = `input_${String(this.imageCounter).padStart(3, '0')}_${timestamp}${extension}`;
       const debugImagePath = path.join(inputImagesDir, debugImageName);
 
       // Copy the image to debug directory
