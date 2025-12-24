@@ -115,6 +115,9 @@ export class CaptchaKrakenSolver {
   }
 
   private async solveSingle(page: Page, captchaElement: ElementHandle, attempt: number): Promise<{ didInteract: boolean, tokenUsage: TokenUsage[] }> {
+    // 0. Wait for content to load and stabilize
+    await this.waitForCaptchaContent(captchaElement);
+
     // 1. Take initial Screenshot to detect movement
     const initialScreenshotPath = path.join(os.tmpdir(), `captcha_init_${Date.now()}.png`);
     await captchaElement.screenshot({ path: initialScreenshotPath });
@@ -122,7 +125,7 @@ export class CaptchaKrakenSolver {
     let inputPath = initialScreenshotPath;
     let isVideo = false;
 
-    // Check for movement
+    // Check for movement (now requires consistent change over 3 frames)
     const hasMovement = await this.checkMovement(captchaElement, initialScreenshotPath);
     if (hasMovement) {
       console.log('Movement detected in captcha, capturing video...');
@@ -235,28 +238,68 @@ export class CaptchaKrakenSolver {
   }
 
   private async checkMovement(captchaElement: ElementHandle, firstScreenshotPath: string): Promise<boolean> {
-    const secondScreenshotPath = path.join(os.tmpdir(), `captcha_check_${Date.now()}.png`);
-    await delay(150); // Wait a bit for movement
+    const secondScreenshotPath = path.join(os.tmpdir(), `captcha_check_2_${Date.now()}.png`);
+    const thirdScreenshotPath = path.join(os.tmpdir(), `captcha_check_3_${Date.now()}.png`);
+
     try {
+      await delay(200); // 200ms gap for more stable movement detection
       await captchaElement.screenshot({ path: secondScreenshotPath });
-    } catch (e) {
-      return false; // Element might have disappeared
-    }
+      await delay(200);
+      await captchaElement.screenshot({ path: thirdScreenshotPath });
 
-    try {
-      const cliRoot = this.config.repoPath ?? getBundledCliRoot();
-      const venvPython = getVenvPython(cliRoot);
-      const py = venvPython ?? (this.config.pythonCommand || 'python');
+      // Compare 1-2 and 2-3 to ensure consistent movement (not just loading/flicker)
+      const move12 = await this.runMovementCheck(firstScreenshotPath, secondScreenshotPath);
+      const move23 = await this.runMovementCheck(secondScreenshotPath, thirdScreenshotPath);
 
-      const command = `${py} -m src.cli check-movement "${firstScreenshotPath}" "${secondScreenshotPath}"`;
-      const { stdout } = await execAsync(command, { cwd: cliRoot });
-      const result = JSON.parse(stdout);
-      return !!result.has_movement;
+      // We only consider it true movement if it's changing across both intervals
+      return move12 && move23;
     } catch (e) {
       console.warn('Movement check failed, assuming static:', e);
       return false;
     } finally {
       if (fs.existsSync(secondScreenshotPath)) fs.unlinkSync(secondScreenshotPath);
+      if (fs.existsSync(thirdScreenshotPath)) fs.unlinkSync(thirdScreenshotPath);
+    }
+  }
+
+  private async runMovementCheck(img1: string, img2: string, threshold: number = 0.005): Promise<boolean> {
+    try {
+      const cliRoot = this.config.repoPath ?? getBundledCliRoot();
+      const venvPython = getVenvPython(cliRoot);
+      const py = venvPython ?? (this.config.pythonCommand || 'python');
+
+      const command = `${py} -m src.cli check-movement "${img1}" "${img2}" ${threshold}`;
+      const { stdout } = await execAsync(command, { cwd: cliRoot });
+      const result = JSON.parse(stdout);
+      return !!result.has_movement;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  private async waitForCaptchaContent(captchaElement: ElementHandle): Promise<void> {
+    const frame = await captchaElement.contentFrame();
+    if (!frame) return;
+
+    try {
+      const src = await captchaElement.evaluate(el => (el as Element).getAttribute('src') || '');
+
+      if (src.includes('hcaptcha')) {
+        // hCaptcha: Wait for task images or the success checkmark
+        await Promise.race([
+          frame.waitForSelector('.task-image', { state: 'visible', timeout: 10000 }),
+          frame.waitForSelector('.check', { state: 'visible', timeout: 5000 })
+        ]);
+      } else if (src.includes('recaptcha')) {
+        // reCAPTCHA: Wait for image tiles
+        await frame.waitForSelector('.rc-image-tile-wrapper', { state: 'visible', timeout: 10000 });
+      }
+
+      // Small additional delay to allow for fade-in animations to stabilize
+      await delay(800);
+    } catch (e: any) {
+      console.warn('[Solver] Timeout or error waiting for captcha content:', e.message);
+      // Proceed anyway, solveSingle will handle missing elements
     }
   }
 
