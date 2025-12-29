@@ -242,7 +242,7 @@ export class CaptchaKrakenSolver {
     const thirdScreenshotPath = path.join(os.tmpdir(), `captcha_check_3_${Date.now()}.png`);
 
     try {
-      await delay(200); // 200ms gap for more stable movement detection
+      await delay(600); // 200ms gap for more stable movement detection
       await captchaElement.screenshot({ path: secondScreenshotPath });
       await delay(200);
       await captchaElement.screenshot({ path: thirdScreenshotPath });

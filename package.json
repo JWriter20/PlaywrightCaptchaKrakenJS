@@ -14,7 +14,7 @@
     "test": "CAPTCHA_DEBUG=1 npx playwright test tests/solving.spec.ts --grep \"Recaptcha\"",
     "prepublishOnly": "npm run build",
     "postinstall": "node scripts/setup-python.js",
-    "update-cli": "git -C CaptchaKraken-cli pull origin main"
+    "update-cli": "node scripts/update-cli.js"
   },
   "repository": {
     "type": "git",
