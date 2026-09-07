@@ -13,6 +13,7 @@
   "scripts": {
     "prebuild": "node scripts/copy-python.mjs",
     "build": "tsc",
+    "demo": "tsx examples/demoSites.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "tsc -p tsconfig.test.json && node --test .test-build/*.test.js",
     "prepublishOnly": "npm run build",
