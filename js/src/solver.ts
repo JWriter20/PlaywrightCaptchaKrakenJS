@@ -86,6 +86,32 @@ function cliEnv(cliRoot: string, extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 
 // Simple Vector interface for internal use moved to types.ts
 
+/**
+ * The HOSTNAME of the page being solved, or null.
+ *
+ * TWIN OF `page_solver._site_of`, and the same reasoning applies: this value
+ * leaves the caller's machine, and a URL's path and query are where session
+ * tokens, order ids and email addresses live. `new URL().hostname` is a parser
+ * rather than a pattern that has to be got right — it drops the path, the
+ * query, the fragment, the port and any `user:pass@` prefix. A captcha appears
+ * on a login page, which is exactly the URL you would least want to send
+ * anywhere.
+ *
+ * NEVER THROWS. `page.url()` is a method in Playwright and Puppeteer and a
+ * property in some adapters, so both are tried; anything else — a page that
+ * navigated mid-solve, an `about:blank` with no host — yields null and the
+ * header is simply absent. A solve must not fail over telemetry.
+ */
+export function siteOf(page: Page): string | null {
+  try {
+    const raw = (page as { url?: unknown }).url;
+    const url = typeof raw === 'function' ? (raw as () => string).call(page) : raw;
+    return new URL(String(url)).hostname.toLowerCase() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Cached geometry for one reCAPTCHA 3x3 dynamic-puzzle session. */
 interface GridSession {
   /** Grid cell boxes in SCREENSHOT pixel space, row-major, 0-indexed array. */
@@ -550,6 +576,15 @@ export class CaptchaKrakenSolver {
   // session id lets the gateway bill them as one capped attempt rather than N
   // independent ones. Null outside a solve; ignored entirely when self-hosting.
   private solveSessionId: string | null = null;
+  /**
+   * The HOSTNAME of the page this solve is on, for `X-CK-Site`. Same lifetime
+   * as the session id above and set from the same place, because a stale one
+   * would file this captcha under the last page's domain — worse than filing it
+   * under none, since a per-site rate is only worth reading if every row in it
+   * is a site the solve actually happened on. Null when the page has no
+   * readable host, and ignored entirely when self-hosting.
+   */
+  private solveSite: string | null = null;
 
   /** Interpreter + CLI root, resolved once. See resolveCli. */
   private cliCache: { cliRoot: string; py: string } | null = null;
@@ -595,6 +630,7 @@ export class CaptchaKrakenSolver {
 
   async solve(page: Page): Promise<SolveResult | void> {
     this.solveSessionId = randomUUID();
+    this.solveSite = siteOf(page);
     this.budget = new PhaseBudget();
     // FALSE unless the solve returns a solved result. A solve that throws never
     // sets it, which is the right default: the widget did not accept, and the
@@ -625,6 +661,7 @@ export class CaptchaKrakenSolver {
       // Clear last: a stale id leaking into the NEXT solve would merge two
       // separate captchas into one billable attempt.
       this.solveSessionId = null;
+      this.solveSite = null;
     }
   }
 
@@ -644,6 +681,27 @@ export class CaptchaKrakenSolver {
    * nothing here may add latency to what the caller gets back or keep the
    * process alive past it. `unref()` is what makes the second true.
    */
+  /**
+   * The per-solve values the Python CLI turns into X-CK headers.
+   *
+   * ONE BUILDER FOR BOTH CALL SITES. The still-image path and the animated path
+   * each spawn the CLI and each need the same facts, and they were two copies
+   * of one object literal — the shape where the animated path silently keeps
+   * whatever the last edit forgot to give it. Only these two calls reach the
+   * model; every other `cliEnv` site runs a pure-OpenCV subcommand that never
+   * touches the inference endpoint, so neither value belongs in `cliEnv` itself.
+   *
+   * Each key is omitted rather than sent empty, because `routing_headers` skips
+   * an empty variable and an empty `X-CK-Site` would otherwise reach the
+   * gateway only to be rejected there.
+   */
+  private solveEnvExtra(): NodeJS.ProcessEnv {
+    return {
+      ...(this.solveSessionId ? { CAPTCHA_KRAKEN_SESSION: this.solveSessionId } : {}),
+      ...(this.solveSite ? { CAPTCHA_KRAKEN_SITE: this.solveSite } : {}),
+    };
+  }
+
   private reportOutcome(sessionId: string | null, solved: boolean): void {
     if (!sessionId) return;
     // CHECKED HERE, NOT ONLY IN PYTHON. The Python side honours the same
@@ -3256,10 +3314,7 @@ export class CaptchaKrakenSolver {
       // literally, with no quoting hazard.
       const { stdout, stderr } = await execFileAsync(py, args, {
         cwd: cliRoot,
-        env: solveEnv(
-          cliEnv(cliRoot, this.solveSessionId ? { CAPTCHA_KRAKEN_SESSION: this.solveSessionId } : undefined),
-          apiKey,
-        ),
+        env: solveEnv(cliEnv(cliRoot, this.solveEnvExtra()), apiKey),
         maxBuffer: 10 * 1024 * 1024,
       });
       if (stderr) console.error('CaptchaKraken CLI stderr:', stderr);
@@ -3628,10 +3683,7 @@ export class CaptchaKrakenSolver {
         // session id — the other cliEnv() call sites run pure-OpenCV subcommands
         // that never touch the inference endpoint. `solveEnv` adds the bearer
         // token here, which is what keeps it out of argv.
-        env: solveEnv(
-          cliEnv(cliRoot, this.solveSessionId ? { CAPTCHA_KRAKEN_SESSION: this.solveSessionId } : undefined),
-          apiKey,
-        ),
+        env: solveEnv(cliEnv(cliRoot, this.solveEnvExtra()), apiKey),
         maxBuffer: 10 * 1024 * 1024 // Increase buffer for large outputs if needed
       });
 

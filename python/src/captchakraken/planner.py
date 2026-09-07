@@ -119,10 +119,32 @@ _PRIORITY_ENV = "CAPTCHA_REQUEST_PRIORITY"
 #   billable attempt. The JS driver mints a UUID per solve() and reuses it for
 #   every CLI invocation in that solve, which is what lets the gateway cap an
 #   attempt's billable rounds instead of charging per round without limit.
+# X-CK-Site    — the HOSTNAME the solve is happening on, and nothing else: no
+#   path, no query, no credentials. `page_solver._site_of` derives it from
+#   `page.url` per solve. It is what lets the hosted API answer "which sites is
+#   this failing on", which is the question that turns a solve rate into work —
+#   one vendor rolling out a new variant shows up as one host's rate falling
+#   while the aggregate does not move. Attribution only, like X-CK-Client:
+#   caller-supplied, never priced on, and `CAPTCHA_REPORT_SITE=0` turns it off.
 _CLIENT_HEADER = "X-CK-Client"
 _CLIENT_ENV = "CAPTCHA_KRAKEN_CLIENT"
 _SESSION_HEADER = "X-CK-Session"
 _SESSION_ENV = "CAPTCHA_KRAKEN_SESSION"
+_SITE_HEADER = "X-CK-Site"
+_SITE_ENV = "CAPTCHA_KRAKEN_SITE"
+
+# Send the page's hostname with each solve. "0" turns it off.
+#
+# SEPARATE FROM THE OUTCOME SWITCH, because they are separate disclosures. The
+# outcome is a fact about OUR model — did it get this one right — and it is what
+# makes a failure improvable at all. The site is a fact about the CUSTOMER'S
+# business, and an account can reasonably want the first sent and not the
+# second. One switch for both would price that choice at "tell us nothing", and
+# the failure corpus would be the thing that lost.
+#
+# The server-side half is `captureOptOut` on the account, which turns off the
+# whole store; either one alone is enough to keep nothing.
+_REPORT_SITE_ENV = "CAPTCHA_REPORT_SITE"
 
 # Report whether the widget accepted, once per solve. "0" turns it off.
 #
@@ -149,7 +171,8 @@ _REPORT_OUTCOME_ENV = "CAPTCHA_REPORT_OUTCOME"
 # escape the per-attempt billing cap by pinning one session id forever.
 _EXTRA_HEADERS_ENV = "CAPTCHA_KRAKEN_EXTRA_HEADERS"
 _PROTECTED_HEADERS = frozenset(
-    {"authorization", "content-type", _CLIENT_HEADER.lower(), _SESSION_HEADER.lower()}
+    {"authorization", "content-type", _CLIENT_HEADER.lower(),
+     _SESSION_HEADER.lower(), _SITE_HEADER.lower()}
 )
 
 # These values reach the wire verbatim from the environment, so they are
@@ -227,7 +250,15 @@ def routing_headers(env=None) -> Dict[str, str]:
         except ValueError:
             pass
 
-    for header, var in ((_CLIENT_HEADER, _CLIENT_ENV), (_SESSION_HEADER, _SESSION_ENV)):
+    for header, var in ((_CLIENT_HEADER, _CLIENT_ENV), (_SESSION_HEADER, _SESSION_ENV),
+                        (_SITE_HEADER, _SITE_ENV)):
+        # The site is the one of the three a caller may switch off on its own.
+        # Checked inside the loop rather than around it so a disabled site
+        # cannot take the other two headers with it — that is the same
+        # independence the priority parse above is written for, and one typo
+        # there would make a camoufox solve look like direct traffic.
+        if header == _SITE_HEADER and env.get(_REPORT_SITE_ENV, "1") == "0":
+            continue
         value = _clean_header_value(env.get(var) or "")
         if value:
             headers[header] = value

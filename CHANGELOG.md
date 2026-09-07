@@ -3,6 +3,37 @@
 All notable changes to CaptchaKraken are documented here. This project follows
 semantic versioning; v2 is a major, **breaking** release.
 
+## [2.10.0] - 2026-09-07
+
+The hosted API could tell you a solve failed. It could not tell you WHERE.
+
+### Added
+
+- **`X-CK-Site` — the hostname of the page being solved.** Sent per solve by
+  both drivers, from `page.url`, and read only by the hosted gateway. It is what
+  makes a solve rate actionable: one vendor rolling out a new variant shows up
+  as one host's rate falling, where the aggregate does not move at all.
+
+  **The hostname and nothing else.** Not the path, not the query, not a
+  fragment, no `user:pass@` prefix, no port. A captcha lives on a login or a
+  checkout page, so the URL is PARSED and the host taken out of it rather than a
+  URL being sent and trimmed later — `https://shop.example.com/account/reset?
+  token=9f3c1a` is reported as `shop.example.com`. Pinned in both ports by
+  `test_only_the_hostname_leaves_the_machine.py` and
+  `site-is-only-the-hostname.test.ts`.
+
+  A page with no host — `about:blank`, a `file://` fixture, a page that closed
+  mid-solve — sends no header rather than a guess, and nothing here can raise: a
+  solve must not fail over telemetry.
+
+- **`CAPTCHA_REPORT_SITE=0` turns it off**, on its own. Separate from
+  `CAPTCHA_REPORT_OUTCOME` because they are separate disclosures: the outcome is
+  a fact about our model and the site is a fact about your business, and one
+  switch for both would price that choice at "tell us nothing". Turning off
+  either leaves the other working. Self-hosted users send neither, unchanged.
+
+Nothing was removed or renamed; `contract.json` grows two env-var entries.
+
 ## [2.8.0] - 2026-09-06
 
 A model can now be a MIXTURE rather than a single adapter, and a model can now

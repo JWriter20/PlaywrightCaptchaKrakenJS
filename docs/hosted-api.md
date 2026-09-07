@@ -157,6 +157,38 @@ Screenshots you send are processed by our gateway and the model fleet. If that
 is not acceptable for your use case, [self-host](./self-hosting.md) — the open
 weights run entirely on your hardware and nothing leaves your machine.
 
+### What the driver reports back, and how to turn it off
+
+Two things travel alongside a hosted solve. Both are on by default, both are a
+single environment variable to disable, and neither exists at all when you are
+self-hosting — they are set per solve by the driver and only ever read by our
+gateway.
+
+| | What it is | Off with |
+|---|---|---|
+| The outcome | Whether the widget accepted, once per `solve()`. `POST /v1/solve-outcome`, unmetered. | `CAPTCHA_REPORT_OUTCOME=0` |
+| The site | The **hostname** of the page being solved, as an `X-CK-Site` header. | `CAPTCHA_REPORT_SITE=0` |
+
+**The outcome is the one thing our API cannot see for itself.** A wrong answer
+reaches us as a 200 with well-formed JSON in it; only your browser watched the
+widget. Without it we cannot tell a solved captcha from a failed one, so the
+boards the model is worst at — the ones worth retraining on — are invisible.
+
+**The site is the hostname and nothing else.** Not the path, not the query
+string, not a fragment, no `user:pass@` prefix, no port. A captcha lives on a
+login or checkout page, so the URL is parsed and the host taken from it rather
+than the URL being sent and trimmed later: `https://shop.example.com/account/
+reset?token=9f3c1a` is reported as `shop.example.com`. It is what lets us see
+that one vendor's new variant is failing on your site specifically, rather than
+only that our aggregate rate moved.
+
+**Two switches, because they are two different disclosures.** The outcome is a
+fact about our model. The site is a fact about your business. Turning off either
+leaves the other working.
+
+There is also an account-level switch that stops us storing anything from your
+solves at all, images included — ask support to set it on your account.
+
 ---
 
 ← Back to [docs index](./README.md)
