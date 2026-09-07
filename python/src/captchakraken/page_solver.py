@@ -2011,7 +2011,7 @@ class PageSolver:
             self._keyframe_mode = kfset.mode
             self._keyframe_steady_screens = kfset.steady_screens
             keyframe_dir = tempfile.mkdtemp(prefix="ckkf_")
-            paths = write_keyframes(kfset, keyframe_dir)
+            paths = write_keyframes(kfset, keyframe_dir, stem="challenge")
             with self._phase("inference"):
                 actions, usage = self._get_keyframe_solution(paths)
             self._animated_plan = (paths, keyframe_dir, actions, usage)
