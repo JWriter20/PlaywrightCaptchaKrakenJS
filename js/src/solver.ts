@@ -346,9 +346,90 @@ const SLIDE_MAX_CORRECTIONS = 2;
  * can be pinned by a test — see no-progress.test.ts. The Python port keeps the
  * same pair on `PageSolverConfig`.
  */
+/**
+ * Does this answer need the widget's box to be performed?
+ *
+ * Only a coordinate-bearing action does. `done` means "nothing left to click"
+ * and is the answer a vendor that closes on success will be showing no widget
+ * for, so requiring a box for it fails the solve at the moment it succeeded.
+ *
+ * Written as an ALLOW-LIST of what needs nothing rather than a list of what
+ * does: a new coordinate action added later must default to needing the box,
+ * because that is the direction where being wrong throws instead of clicking
+ * nowhere.
+ */
+export function answerNeedsElementBox(actions: ReadonlyArray<{ action?: string }>): boolean {
+  return actions.some((a) => a?.action !== 'done');
+}
+
+/**
+ * Is this the challenge TRANSITIONING under us, rather than a dead puzzle?
+ *
+ * hCaptcha swaps in the next round while we hold the old iframe, so a
+ * screenshot on it fails "not visible" / "Timeout" / "not attached". GeeTest
+ * does the mirror image: it CLOSES the panel the moment it accepts an answer,
+ * so the widget we are holding loses its layout box between the screenshot and
+ * the click. Both are the widget moving on, and the answer to both is to
+ * re-detect on the next round rather than to fail the solve.
+ *
+ * The caller gates this on having ALREADY INTERACTED, which is what keeps it
+ * honest: a first-frame failure is a genuine problem and still surfaces.
+ *
+ * Measured 2026-09-07 on gt4.geetest.com — every live GeeTest attempt ended
+ * "Could not get bounding box of captcha element" on a panel the vendor had
+ * just accepted, and each was recorded as the model being wrong.
+ */
+export function isStaleHandleError(message: string): boolean {
+  return /Timeout .*exceeded|not visible|not attached|detached|Target closed|bounding box of captcha element/i
+    .test(message);
+}
+
+/**
+ * How unlike the chosen keyframe the widget has to look before the gate calls
+ * it a different board, and over how many polls.
+ *
+ * Measured on GeeTest svg: two SCREENS of one board differ by 0.0056 (thin line
+ * art, a few glyph strokes); a different board reads 0.77. Two orders of
+ * magnitude apart, so this threshold is a plateau rather than a knife edge.
+ * Several polls, not one, because a transition frame caught mid-swap can read
+ * high for a moment.
+ */
+const NOT_THIS_BOARD_DIFF = 0.5;
+/**
+ * How much the widget must change during inference to count as MOVING.
+ *
+ * A separate, much tighter number than `staleFrameDiffThreshold` (0.02),
+ * because it answers a different question. 0.02 asks "did this answer go
+ * stale" — did tiles move enough that the coordinates no longer land. This asks
+ * "is this picture the same picture", which is the noise floor, and the two are
+ * an order of magnitude apart.
+ *
+ * Using the stale threshold for both made the guard BLIND to the board it most
+ * needed to see: GeeTest svg's screens differ by 0.0056, comfortably under
+ * 0.02, so a board cycling all the way through a 2.7s inference reported no
+ * change at all. Third time this file has applied a coarse threshold to a fine
+ * question (see `distinct_ratio` in keyframes.py and NOT_THIS_BOARD_DIFF).
+ *
+ * 0.002 sits above the measured frame-to-frame noise floor (0.001) and well
+ * under the 0.0056 separation.
+ */
+const MOVED_DURING_INFERENCE_DIFF = 0.002;
+const NOT_THIS_BOARD_POLLS = 3;
+
 export const SOLVE_DEFAULTS = {
   maxSolveLoops: 6,
   overallSolveTimeoutMs: 45_000,
+  /**
+   * How long to hold a click waiting for the screen the model answered about.
+   *
+   * 9000, not the 6000 it was. A GeeTest svg board dwells p50 1.5s / p75 2.0s /
+   * max 2.7s per screen, so a 3-screen cycle runs 4.5s median and 8.1s worst
+   * case — a 6s budget could not catch the worst case however well aimed, and
+   * gave up one screen short. Named here rather than left as a literal in two
+   * places because `video_budget_ms` is derived from it on both ports and the
+   * arithmetic has to agree.
+   */
+  keyframeWaitTimeoutMs: 9_000,
 } as const;
 
 export class CaptchaKrakenSolver {
@@ -399,11 +480,56 @@ export class CaptchaKrakenSolver {
   // and the challenge is re-solved from a recorded burst. See
   // repeated-answer.test.ts.
   private repeatedAnswerSeen = false;
+  /**
+   * The ONE recording and the ONE answer for the animated challenge on screen.
+   *
+   * A cycling board needs a single inference and no more. The burst shows the
+   * model every screen; the answer names the cell AND the screen it is on
+   * (`frame` / `await_keyframe`); the gate then holds the click until that
+   * screen is back up. Nothing about that changes between rounds — the board
+   * keeps cycling through the same pictures with the same target — so asking
+   * again buys nothing and costs a burst plus a multi-image inference.
+   *
+   * It was asking again every round. Loops 3, 4 and 5 each re-recorded and
+   * re-inferred, which is what exhausted a 66s budget on a puzzle whose whole
+   * task is one click.
+   *
+   * Dropped when the gate reports it never saw the chosen screen: that means
+   * the widget is no longer the board this plan was made for, which is exactly
+   * when a fresh recording is warranted.
+   */
+  private animatedPlan: { burstDir: string; response: CliResponse } | null = null;
   // Slicing mode of the burst the current answer came from, as reported by
   // `solve-animated`. `waitForKeyframe` reads it: `even` means the slicer found
   // no state that RECURS, so there is nothing for the page to come back to and
   // the gate can only ever time out. See test_even_clips_do_not_wait.py.
   private keyframeMode: string | null = null;
+  /**
+   * How many distinct steady screens the current clip sits on; 0 if it is not
+   * that kind of clip. THE GATE KEYS ON THIS, NOT ON `keyframeMode`.
+   *
+   * `even` was being read as "no state recurs, do not wait". It does not mean
+   * that — it means the slicer could not PROVE recurrence, which for a board
+   * whose loop is longer than a 4s burst it never can. 32 of 60 real clips
+   * sliced `even` while sitting on 2-3 steady screens, so the gate was off on
+   * every real animated captcha and the driver clicked whichever screen was up.
+   */
+  private keyframeSteadyScreens = 0;
+  /**
+   * When the current solve must be over, in `Date.now()` terms. 0 outside one.
+   *
+   * The budget used to be checked ONLY at the top of each solve loop, so any
+   * single round could overrun it without limit — and an animated round is the
+   * long one: a 4s burst of 40 element screenshots, a multi-image inference,
+   * then a gated click per target. Measured on GeeTest svg, 2026-09-07: rounds
+   * that re-recorded ran past a 66s budget to the harness's own 180s ceiling
+   * and were reported "hung, not slow", which is a message about the model for
+   * a driver that simply never looked at the clock.
+   *
+   * The Python port has always checked mid-wait (`_check_deadline`), so this
+   * was also a cross-port divergence on exactly the puzzles Tier 3 times.
+   */
+  private solveDeadlineAt = 0;
   // Repeat detection; see `maxNoProgressRounds`. `lastAnswerSig` is the answer
   // the previous round EXECUTED, `noProgressRounds` how many rounds running
   // have re-executed it.
@@ -632,6 +758,9 @@ export class CaptchaKrakenSolver {
       // `videoBudgetMs` is 0 until this solve records something, so a solve
       // that never escalates gets exactly the deadline the caller configured.
       const budgetMs = overallSolveTimeoutMs + this.videoBudgetMs;
+      // Published so the burst and the keyframe gate can stop on their own
+      // rather than overrunning and being noticed a round later.
+      this.solveDeadlineAt = start + budgetMs;
       if (Date.now() - start > budgetMs) {
         throw new Error(
           `Captcha solve timed out after ${budgetMs}ms (attempt ${attempt}/${maxSolveLoops})`
@@ -774,7 +903,7 @@ export class CaptchaKrakenSolver {
         if (
           hasInteracted
           && staleElementRetries < maxStaleElementRetries
-          && /Timeout .*exceeded|not visible|not attached|detached|Target closed/i.test(emsg)
+          && isStaleHandleError(emsg)
         ) {
           staleElementRetries++;
           console.log(
@@ -876,8 +1005,8 @@ export class CaptchaKrakenSolver {
       // some" instruction. If we've already retried once and the error is
       // STILL showing, bail — the model is stuck and the loop will just
       // keep flipping between "done" and Verify until timeout.
-      const recaptchaUnderselect = await this.hasRecaptchaUnderselectError(page);
-      if (recaptchaUnderselect) {
+      const banner = await this.recaptchaBannerKind(page);
+      if (banner && this.bannerIsFatalAfterRetry(banner)) {
         if (alreadyRetriedRecaptchaError) {
           throw new Error(
             'reCAPTCHA still showing the under-selection error after retry; '
@@ -1156,9 +1285,71 @@ export class CaptchaKrakenSolver {
       //    a stale frame, so we re-screenshot and re-solve on the developed one.
       let response: CliResponse;
       if (isAnimated) {
-        burstDir = await this.ph('burst', () => this.recordKeyframeBurst(captchaElement));
-        response = await this.ph('inference', () => this.withIdleWander(page, captchaElement, () =>
-          this.getAnimatedSolution(burstDir as string)));
+        // ONE burst, ONE inference, for as long as this board is on screen.
+        if (this.animatedPlan) {
+          burstDir = this.animatedPlan.burstDir;
+          response = this.animatedPlan.response;
+          console.log('[animated] reusing the recorded answer — same board, same screens');
+        } else {
+          burstDir = await this.ph('burst', () => this.recordKeyframeBurst(captchaElement));
+          response = await this.ph('inference', () => this.withIdleWander(page, captchaElement, () =>
+            this.getAnimatedSolution(burstDir as string)));
+          this.animatedPlan = { burstDir, response };
+        }
+      } else if (this.shouldSpeculate(puzzleSource, textMode)) {
+        /*
+         * ASK AND WATCH AT THE SAME TIME.
+         *
+         * The screenshot goes to the model and the recording starts in the same
+         * breath. Whichever the board turns out to be, the answer arrives about
+         * one inference from now:
+         *
+         *   still  — the recording saw one picture, so the still answer stands
+         *            and the frames are dropped. Identical to the old behaviour
+         *            and identical in cost; the burst happened inside a wait we
+         *            were making anyway.
+         *   moving — the still answer is discarded UNREAD, because it describes
+         *            a screen that has already gone. The burst runs on to the
+         *            end of the cycle and the multi-image answer is used. Two
+         *            inference CALLS, roughly one inference of wall-clock.
+         *
+         * The old shape learned the same thing in whole ROUNDS — answer a
+         * still, act, notice nothing moved, answer another, then record — which
+         * measured ~15s of a 40s solve.
+         *
+         * NO IDLE WANDER while speculating: the cursor drifts across the widget
+         * during inference, and every frame of the burst would have a mouse
+         * pointer in a different place. That is a new picture each time, which
+         * reads as a board with a dozen screens.
+         */
+        const rec = this.startKeyframeBurst(captchaElement);
+        let still: CliResponse | null = null;
+        let stillError: unknown = null;
+        try {
+          still = await this.ph('inference', () => this.solveFrameFreshnessGuarded(
+            captchaElement, screenshotPath,
+            (imagePath) => this.getSolution(imagePath, puzzleSource, retryMode, textMode),
+          ));
+        } catch (e) {
+          stillError = e;   // rethrown below only if the board turns out still
+        }
+
+        if (!rec.moved()) {
+          await rec.abandon();
+          if (stillError) throw stillError;
+          response = still as CliResponse;
+        } else {
+          console.log(
+            '[animated] the widget moved while the model was reading it — dropping '
+            + 'the still answer and finishing the recording.',
+          );
+          isAnimated = true;
+          this.repeatedAnswerSeen = true;   // so later rounds go straight to it
+          burstDir = await this.ph('burst', () => rec.finish());
+          response = await this.ph('inference', () => this.withIdleWander(page, captchaElement, () =>
+            this.getAnimatedSolution(burstDir as string)));
+          this.animatedPlan = { burstDir, response };
+        }
       } else {
         response = await this.ph('inference', () => this.solveFrameFreshnessGuarded(
           captchaElement, screenshotPath,
@@ -1175,11 +1366,41 @@ export class CaptchaKrakenSolver {
       // 3. Execute Actions
       const actionList = Array.isArray(actions) ? actions : [actions];
 
-      // We need the element's bounding box to translate coordinates
+      /*
+       * The box translates NORMALISED coordinates into page ones, so it is
+       * needed only by an action that carries coordinates. A `done` answer
+       * carries none — it means "nothing left to click", and falls through to
+       * the submit block below.
+       *
+       * DEMANDING IT UNCONDITIONALLY TURNED SUCCESSES INTO ERRORS. Several
+       * vendors CLOSE the challenge the moment it is satisfied, so the widget
+       * is legitimately gone by the time the model says `done` — and the throw
+       * landed on the one answer that proves the solve worked. Measured
+       * 2026-09-07 on gt4.geetest.com: loop 1 clicked three tiles, loop 2
+       * returned `{"action":"done"}`, the panel went `display:none` because
+       * GeeTest had accepted it, and the driver reported
+       * "Could not get bounding box of captcha element". Every live GeeTest
+       * attempt failed that way — 22 of 22 across four puzzles — and each was
+       * recorded as the model being wrong.
+       *
+       * Without a box, a `done` answer now reaches the submit block and then
+       * the next loop, where `detectCaptcha` finds nothing and the existing
+       * post-interaction rule reports the solve. A coordinate action with no
+       * box still throws, because that one genuinely cannot be performed.
+       */
       const elementBox = await captchaElement.boundingBox();
-      if (!elementBox) {
+      if (!elementBox && answerNeedsElementBox(actionList)) {
         throw new Error('Could not get bounding box of captcha element');
       }
+      // Read at the point of use rather than asserted once: every reader below
+      // sits inside a coordinate action's branch, which the guard above has
+      // already made unreachable without a box. Keeping the check here means
+      // the type is honest AND the original error survives for the case that
+      // genuinely cannot be performed.
+      const requireBox = () => {
+        if (!elementBox) throw new Error('Could not get bounding box of captcha element');
+        return elementBox;
+      };
 
       // Recorded at the moment of EXECUTION, which is what makes a repeat mean
       // something: this exact answer is about to be performed, so if it matches
@@ -1206,14 +1427,16 @@ export class CaptchaKrakenSolver {
               // in the state the model answered about. Per-click, not once per
               // action: these puzzles keep cycling, so by the time click 2 comes
               // round the state has moved on again.
+              const one = { ...c, target_bounding_box: bbox } as ClickAction;
               if (c.await_keyframe) {
-                await this.waitForKeyframe(captchaElement, c.await_keyframe, ...bboxCenter(bbox));
+                await this.clickWhenFrameMatches(page, captchaElement, one, requireBox(), c.await_keyframe);
+              } else {
+                await this.executeClick(page, captchaElement, one, requireBox());
               }
-              await this.executeClick(page, captchaElement, { ...c, target_bounding_box: bbox } as ClickAction, elementBox);
               await this.human.pause('between');
             }
           } else {
-            await this.executeClick(page, captchaElement, c, elementBox);
+            await this.executeClick(page, captchaElement, c, requireBox());
           }
           performedAction = true;
           clicked = true;
@@ -1222,7 +1445,7 @@ export class CaptchaKrakenSolver {
           // No source — a puzzle-piece slider. What you grab is not what has to
           // arrive, so this cannot go through executeDrag: pressing the gap the
           // model named and dragging from there picks up nothing at all.
-          if (await this.executeSlide(page, captchaElement, scope, action as DragAction, elementBox)) {
+          if (await this.executeSlide(page, captchaElement, scope, action as DragAction, requireBox())) {
             performedAction = true;
             slid = true;
             await this.emitStep(captchaElement, 'drag', 'slid the piece into the slot', puzzleSource, frameRole, attempt, { action });
@@ -1236,7 +1459,7 @@ export class CaptchaKrakenSolver {
           if (d.await_keyframe && d.source_bounding_box) {
             await this.waitForKeyframe(captchaElement, d.await_keyframe, ...bboxCenter(d.source_bounding_box));
           }
-          await this.executeDrag(page, captchaElement, action as any, elementBox);
+          await this.executeDrag(page, captchaElement, action as any, requireBox());
           performedAction = true;
           placed = true;
           await this.emitStep(captchaElement, 'drag', 'drag', puzzleSource, frameRole, attempt, { action });
@@ -1338,7 +1561,9 @@ export class CaptchaKrakenSolver {
       // Only now: the wait gate re-reads the keyframe PNGs (which live inside this
       // directory) on every poll, so removing it any earlier would break the click
       // it is gating.
-      if (burstDir) {
+      // ...and not while the PLAN still holds them: the next round re-executes
+      // this same answer, and the gate reads these PNGs on every poll.
+      if (burstDir && this.animatedPlan?.burstDir !== burstDir) {
         try { fs.rmSync(burstDir, { recursive: true, force: true }); } catch { /* best-effort */ }
       }
     }
@@ -1430,28 +1655,56 @@ export class CaptchaKrakenSolver {
   }
 
   /**
-   * Detect reCAPTCHA's "Please select all matching images" error banner
-   * (and the related "Please try again" / "Please also check the new images"
-   * variants). These appear in the bframe AFTER clicking Verify with an
-   * incomplete selection. The tiles do NOT refresh on this error — without
-   * special handling the LoRA sees the same image, returns "done" (because
-   * to it everything matching IS selected), we click Verify again, and we
-   * loop until the session times out. We use this signal to switch the next
-   * grid call into "missed-tiles" retry mode.
+   * WHICH of reCAPTCHA's three bframe banners is showing, if any.
+   *
+   * They share a corner and a look and they mean different things:
+   *
+   *   `rejected`      "Please try again."  The answer was wrong; a fresh board
+   *                   follows, so the useful response is to solve that one.
+   *   `select-more`   "Please select all matching images."  Under-selected, and
+   *                   the tiles do NOT refresh — so a driver that re-submits
+   *                   the same answer loops until the session times out. This
+   *                   is the one the missed-tiles retry and the abort exist for.
+   *   `dynamic-more`  "Please also check the new images."  NOT AN ERROR. It is
+   *                   the dynamic 3x3's normal flow: cleared tiles fade out,
+   *                   replacements fade in, and the widget says so — on
+   *                   essentially every round of that variant.
+   *
+   * This used to return a boolean over all three, which made the third one
+   * indistinguishable from the first two and armed the one-retry abort with the
+   * sentence that means "you are doing fine". Every dynamic board therefore
+   * died at round two while the vendor was still dealing. Measured 2026-09-06:
+   * three of three `recaptcha_3x3_fade` attempts stopped at exactly boards=2,
+   * against `recaptcha_4x4` passing at 2, 3 and 5 boards on the same run.
    */
-  private async hasRecaptchaUnderselectError(page: Page): Promise<boolean> {
+  /**
+   * May a repeat of this banner end the solve?
+   *
+   * Only for the banners where repeating means STUCK. `dynamic-more` repeating
+   * means the board is still being cleared, which is progress, and treating it
+   * as fatal is the bug this pair of methods was split to fix.
+   */
+  private bannerIsFatalAfterRetry(
+    kind: 'rejected' | 'select-more' | 'dynamic-more' | null,
+  ): boolean {
+    return kind === 'select-more' || kind === 'rejected';
+  }
+
+  private async recaptchaBannerKind(
+    page: Page,
+  ): Promise<'rejected' | 'select-more' | 'dynamic-more' | null> {
     try {
       const bframe = await page.$('iframe[src*="recaptcha/api2/bframe"]');
-      if (!bframe) return false;
+      if (!bframe) return null;
       const frame = await bframe.contentFrame();
-      if (!frame) return false;
-      // Three selector variants reCAPTCHA uses for the same family of errors.
-      const selectors = [
-        '.rc-imageselect-error-select-more',
-        '.rc-imageselect-error-dynamic-more',
-        '.rc-imageselect-incorrect-response',
-      ];
-      for (const sel of selectors) {
+      if (!frame) return null;
+      // One selector per MEANING. Order is irrelevant — reCAPTCHA shows one.
+      const banners = [
+        ['.rc-imageselect-error-select-more', 'select-more'],
+        ['.rc-imageselect-error-dynamic-more', 'dynamic-more'],
+        ['.rc-imageselect-incorrect-response', 'rejected'],
+      ] as const;
+      for (const [sel, kind] of banners) {
         const el = await frame.$(sel);
         if (el) {
           // reCAPTCHA toggles these elements between visible / hidden via
@@ -1461,12 +1714,12 @@ export class CaptchaKrakenSolver {
           // enough.
           const visible = await el.isVisible().catch(() => false);
           const text = (await el.textContent().catch(() => null)) ?? '';
-          if (visible && text.trim().length > 0) return true;
+          if (visible && text.trim().length > 0) return kind;
         }
       }
-      return false;
+      return null;
     } catch {
-      return false;
+      return null;
     }
   }
 
@@ -2824,72 +3077,146 @@ export class CaptchaKrakenSolver {
    * keyframes the wait gate re-reads on every poll live inside it.
    */
   private async recordKeyframeBurst(captchaElement: ElementHandle): Promise<string> {
+    const rec = this.startKeyframeBurst(captchaElement);
+    return rec.finish();
+  }
+
+  /**
+   * Start recording NOW, and let the caller decide later what it was for.
+   *
+   * This is what makes the speculative path possible. The burst is the only
+   * thing that can tell a cycling board from a still one, and it is also the
+   * recording that answers it — so it is started at the same moment the still
+   * screenshot goes to the model, and the two run together.
+   *
+   *   - the board never moves  -> `moved()` stays false, the still answer is
+   *     used, and the frames are thrown away. The recording cost nothing but
+   *     CPU, because it happened inside an inference we were already waiting
+   *     for.
+   *   - the board moves        -> the still answer is DISCARDED unread, the
+   *     burst runs on to the end of the cycle, and the multi-image answer is
+   *     the one acted on. Two inference CALLS, but only about one inference of
+   *     wall-clock, because the first ran during the recording.
+   *
+   * The old shape paid for that knowledge in whole ROUNDS: answer a still, act
+   * on it, notice nothing changed, answer another still, and only then record.
+   * ~15s of a 40s solve to learn something the first four frames already knew.
+   */
+  private startKeyframeBurst(captchaElement: ElementHandle): {
+    /** Has the widget shown more than one picture yet? */
+    moved: () => boolean;
+    /** Stop now and delete the frames — the board turned out to be still. */
+    abandon: () => Promise<void>;
+    /** Run to the end of the cycle and return the directory. */
+    finish: () => Promise<string>;
+  } {
     const fps = Math.max(1, this.config.videoBurstFps ?? 10);
     const durationMs = this.config.videoBurstDurationMs ?? 4000;
-
-    /*
-     * THE ESCALATION BUYS ITS OWN BUDGET, once per solve.
-     *
-     * `overallSolveTimeoutMs` counts rounds and a recording is not a round —
-     * see `videoExtraInferenceMs` for the arithmetic and for what it cost not
-     * to have it. Recorded as an EXTENSION rather than by loosening the config,
-     * so a solve that never escalates keeps the deadline the caller asked for.
-     *
-     * Same one-shot, same total, same reason as page_solver.py's
-     * `video_budget_ms`: the ports must not disagree about how long a video
-     * solve may take, or the same fixture passes on one and times out on the
-     * other and it reads as a driver bug.
-     */
-    if (this.config.videoSolveEnabled !== false && !this.videoBudgetGranted) {
-      this.videoBudgetGranted = true;
-      this.videoBudgetMs =
-        durationMs +
-        (this.config.keyframeWaitTimeoutMs ?? 6000) +
-        (this.config.videoExtraInferenceMs ?? 8000);
-    }
-    const total = Math.max(1, Math.round(durationMs / (1000 / fps)));
+    const floorFrames = Math.max(1, Math.round(durationMs / (1000 / fps)));
+    const ceilingMs = this.config.videoBurstMaxMs ?? 12_000;
+    const total = Math.max(floorFrames, Math.round(ceilingMs / (1000 / fps)));
     const intervalMs = 1000 / fps;
 
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ck_burst_'));
+    const order: string[] = [];        // distinct screens, in first-seen order
     let captured = 0;
-    for (let i = 0; i < total; i++) {
-      const started = Date.now();
-      const frame = path.join(dir, `frame_${String(i).padStart(4, '0')}.png`);
-      try {
-        await captchaElement.screenshot({
-          path: frame,
-          timeout: this.config.elementScreenshotTimeoutMs ?? 8000,
-          // ANIMATIONS STAY ON. Everywhere else in this file screenshots are
-          // taken with animations: 'disabled', which is right when the goal is
-          // a stable still — it fast-forwards finite animations and FREEZES
-          // infinite ones. Here the motion IS the subject, so freezing it
-          // records the same picture forty times: GeeTest's svg board cycles in
-          // CSS, and the slicer correctly reported the burst as `mode=static`
-          // and cut it down to a single keyframe, putting us back to answering
-          // a still. hCaptcha's animated challenges hid this because they
-          // animate in canvas, which that flag does not touch.
-          animations: 'allow',
-        });
-        captured++;
-      } catch {
-        // A dropped frame costs a sample, not the recording.
+    let lastDigest: string | null = null;
+    let cycleClosed = false;
+    let stopped = false;
+    let runToEnd = false;              // set by finish(): keep going past the floor
+
+    const loop = (async () => {
+      for (let i = 0; i < total && !stopped; i++) {
+        const started = Date.now();
+        const frame = path.join(dir, `frame_${String(i).padStart(4, '0')}.png`);
+        try {
+          await captchaElement.screenshot({
+            path: frame,
+            timeout: this.config.elementScreenshotTimeoutMs ?? 8000,
+            // ANIMATIONS STAY ON. Everywhere else in this file screenshots are
+            // taken with animations: 'disabled', which is right when the goal is
+            // a stable still — it fast-forwards finite animations and FREEZES
+            // infinite ones. Here the motion IS the subject, so freezing it
+            // records the same picture forty times: GeeTest's svg board cycles
+            // in CSS, and the slicer correctly reported the burst as
+            // `mode=static` and cut it to a single keyframe, putting us back to
+            // answering a still. hCaptcha's animated challenges hid this because
+            // they animate in canvas, which that flag does not touch.
+            animations: 'allow',
+          });
+          captured++;
+          try {
+            const d = createHash('sha1').update(fs.readFileSync(frame)).digest('hex');
+            if (d !== lastDigest) {
+              // A screen already recorded, coming back after another one: the
+              // loop has closed and every screen is now in the clip.
+              if (order.includes(d) && order.length >= 2) cycleClosed = true;
+              else if (!order.includes(d)) order.push(d);
+              lastDigest = d;
+            }
+          } catch { /* a digest we could not take just means no early stop */ }
+        } catch {
+          // A dropped frame costs a sample, not the recording.
+        }
+        // Past the floor and the cycle has closed — anything more is the same
+        // screens again, paid for in wall-clock the solve budget needs.
+        if (runToEnd && cycleClosed && i + 1 >= floorFrames) {
+          console.log(
+            `[animated] cycle closed after ${((i + 1) * intervalMs / 1000).toFixed(1)}s `
+            + `(${order.length} screens); stopping the burst`,
+          );
+          break;
+        }
+        // Drift-corrected: a slow screenshot must not stretch the clip, or the
+        // burst covers more wall-clock than the model trained on and a cycle's
+        // period lands differently across the frames.
+        const wait = intervalMs - (Date.now() - started);
+        if (wait > 0 && i < total - 1) await delay(wait);
       }
-      // Drift-corrected: a slow screenshot must not stretch the clip, or the
-      // burst covers more wall-clock than the model trained on and a cycle's
-      // period lands differently across the frames.
-      const wait = intervalMs - (Date.now() - started);
-      if (wait > 0 && i < total - 1) await delay(wait);
-    }
-    if (!captured) {
-      fs.rmSync(dir, { recursive: true, force: true });
-      const e: any = new Error(
-        'ANIMATED_CHALLENGE: could not record the animated challenge (no frame screenshotted).',
-      );
-      e.animated = true;
-      throw e;
-    }
-    console.log(`[animated] recorded ${captured} frames at ${fps}fps -> ${dir}`);
-    return dir;
+    })();
+
+    return {
+      // More than one picture seen. This is the ONLY question the speculative
+      // caller needs answered, and the burst answers it for free.
+      moved: () => order.length >= 2,
+
+      abandon: async () => {
+        stopped = true;
+        try { await loop; } catch { /* the recording never fails a solve */ }
+        fs.rmSync(dir, { recursive: true, force: true });
+      },
+
+      finish: async () => {
+        runToEnd = true;
+        // THE ESCALATION BUYS ITS OWN BUDGET, once per solve.
+        //
+        // `overallSolveTimeoutMs` counts rounds and a recording is not a round.
+        // Granted HERE rather than when the burst starts, because a speculative
+        // burst that turns out to be unnecessary must not extend the deadline
+        // of a still solve. Recorded as an EXTENSION rather than by loosening
+        // the config, so a solve that never escalates keeps the deadline the
+        // caller asked for. Same one-shot, same total, same reason as
+        // page_solver.py's `video_budget_ms`.
+        if (this.config.videoSolveEnabled !== false && !this.videoBudgetGranted) {
+          this.videoBudgetGranted = true;
+          this.videoBudgetMs =
+            (this.config.videoBurstMaxMs ?? 12_000) +
+            (this.config.keyframeWaitTimeoutMs ?? SOLVE_DEFAULTS.keyframeWaitTimeoutMs) +
+            (this.config.videoExtraInferenceMs ?? 8000);
+        }
+        try { await loop; } catch { /* fall through to the captured-count check */ }
+        if (!captured) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          const e: any = new Error(
+            'ANIMATED_CHALLENGE: could not record the animated challenge (no frame screenshotted).',
+          );
+          e.animated = true;
+          throw e;
+        }
+        console.log(`[animated] recorded ${captured} frames at ${fps}fps -> ${dir}`);
+        return dir;
+      },
+    };
   }
 
   /**
@@ -2938,6 +3265,7 @@ export class CaptchaKrakenSolver {
       if (stderr) console.error('CaptchaKraken CLI stderr:', stderr);
       const parsed = JSON.parse(stdout.trim());
       this.keyframeMode = parsed.keyframe_mode ?? null;
+      this.keyframeSteadyScreens = parsed.steady_screens ?? 0;
       console.log(
         `[animated] ${parsed.source_frames} frames -> ${(parsed.keyframes ?? []).length} `
         + `keyframe(s) (mode=${parsed.keyframe_mode})`,
@@ -2991,16 +3319,29 @@ export class CaptchaKrakenSolver {
     cx: number,
     cy: number,
   ): Promise<boolean> {
-    if (this.keyframeMode === 'even') {
+    // NOT `mode === 'even'`. See `keyframeSteadyScreens`: a board that holds a
+    // few screens is worth waiting for whether or not one burst was long enough
+    // to catch it repeating. What is NOT worth waiting for is a clip with no
+    // steady screens at all — a rotation, a one-way fade, a sprite crossing —
+    // where the gate can only ever time out. Measured: 0 steady screens for all
+    // five continuous hCaptcha video types, 2-3 for every real GeeTest svg.
+    if (this.keyframeSteadyScreens < 2) {
       console.log(
-        '[animated] clip is mode=even (no state recurs); '
-        + "acting on the model's frame without waiting",
+        `[animated] clip sits on ${this.keyframeSteadyScreens} steady screen(s); `
+        + "nothing to come back to, acting on the model's frame without waiting",
       );
       return false;
     }
-    const timeout = this.config.keyframeWaitTimeoutMs ?? 6000;
+    const timeout = this.config.keyframeWaitTimeoutMs ?? SOLVE_DEFAULTS.keyframeWaitTimeoutMs;
     const interval = this.config.keyframeWaitPollMs ?? 120;
-    const deadline = Date.now() + timeout;
+    // Never past the solve's own deadline: waiting for a screen we no longer
+    // have time to click is pure overrun. Mirrors `_check_deadline` in the
+    // Python port's wait loop.
+    const deadline = Math.min(
+      Date.now() + timeout,
+      this.solveDeadlineAt || Number.MAX_SAFE_INTEGER,
+    );
+    let polls = 0;
     const probe = path.join(os.tmpdir(), `ck_kfwait_${Date.now()}_${Math.floor(Math.random() * 1e9)}.png`);
     let best = 1;
     try {
@@ -3009,7 +3350,18 @@ export class CaptchaKrakenSolver {
           await captchaElement.screenshot({
             path: probe,
             timeout: this.config.elementScreenshotTimeoutMs ?? 8000,
-            animations: 'disabled',
+            // 'allow', NOT 'disabled'. THE MOTION IS THE THING BEING WATCHED.
+            //
+            // Playwright's `disabled` fast-forwards finite animations and
+            // FREEZES infinite ones — so a board cycling in CSS is photographed
+            // in the same frozen state on every poll, and a gate whose whole
+            // job is to notice the screen changing could never notice it. It
+            // either matched immediately (on the frozen frame, i.e. whichever
+            // screen the freeze happened to catch) or ran the full budget out.
+            //
+            // `recordKeyframeBurst` already learned this and says so; the probe
+            // that watches for the SAME motion was still freezing it.
+            animations: 'allow',
           });
           const r = await this.runCvTool(
             'match-region',
@@ -3021,6 +3373,24 @@ export class CaptchaKrakenSolver {
             console.log(`[animated] widget matched the chosen keyframe (diff=${r.diff.toFixed(4)})`);
             return true;
           }
+          // NOT THIS BOARD AT ALL — stop waiting for a screen of it.
+          //
+          // The screens of one board differ from each other by very little:
+          // 0.0056 measured on GeeTest svg, where a few glyph strokes change.
+          // A different board reads 0.77. So a diff this large is not "the
+          // wrong screen is up", it is "the puzzle we recorded is gone" —
+          // solved, refreshed, or replaced — and the remaining budget buys
+          // nothing. It was spending the full 9s on this, once per solve,
+          // AFTER the click that had already succeeded.
+          polls++;
+          if (polls >= NOT_THIS_BOARD_POLLS && best > NOT_THIS_BOARD_DIFF) {
+            console.log(
+              `[animated] the widget no longer resembles the recorded board `
+              + `(best diff=${best.toFixed(4)} over ${polls} polls); not waiting out the budget`,
+            );
+            this.discardAnimatedPlan();
+            return false;
+          }
         } catch {
           // A failed probe is one lost poll, not a failed solve.
         }
@@ -3029,9 +3399,15 @@ export class CaptchaKrakenSolver {
     } finally {
       if (fs.existsSync(probe)) { try { fs.unlinkSync(probe); } catch { /* best-effort */ } }
     }
+    // NEVER SAW IT. Either the board moved on to a different challenge, or the
+    // answer was for a screen this widget does not show. Both mean the plan is
+    // spent, so the next round records afresh rather than re-clicking a cell
+    // chosen from pictures that are gone.
+    this.discardAnimatedPlan();
     console.log(
       `[animated] widget never matched the chosen keyframe within ${timeout}ms `
-      + `(closest diff=${best.toFixed(4)}); clicking on the model's coordinates anyway`,
+      + `(closest diff=${best.toFixed(4)}); clicking on the model's coordinates anyway, `
+      + `and recording afresh next round`,
     );
     return false;
   }
@@ -3045,8 +3421,11 @@ export class CaptchaKrakenSolver {
   private resetSolveState(): void {
     this.solutionCache.clear();
     this.repeatedAnswerSeen = false;
+    this.discardAnimatedPlan();
     this.lastSubmitFrameHash = null;
     this.keyframeMode = null;
+    this.keyframeSteadyScreens = 0;
+    this.solveDeadlineAt = 0;
     this.lastAnswerSig = null;
     this.noProgressRounds = 0;
     // Per SOLVE, not per process: a grant leaking into the next captcha would
@@ -3145,6 +3524,34 @@ export class CaptchaKrakenSolver {
    * never animated, so escalating there would swap a path that works for one
    * that cannot read a grid.
    */
+  /** Forget the recorded answer, and delete the frames it was holding. */
+  private discardAnimatedPlan(): void {
+    const dir = this.animatedPlan?.burstDir;
+    this.animatedPlan = null;
+    if (dir && fs.existsSync(dir)) {
+      try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    }
+  }
+
+  /**
+   * Should this round record while it asks?
+   *
+   * reCAPTCHA is excluded for the same reason it is excluded from the animated
+   * path at all: its dynamic 3x3 REPLACES tiles in place, has its own
+   * multi-round driver with its own fade gates, and its grids are never
+   * animated — so a burst there would film a fade and call it a cycle.
+   *
+   * Distorted-text rounds are excluded because the answer is a string, not a
+   * place, and nothing about a recording helps read one.
+   */
+  private shouldSpeculate(puzzleSource: 'hcaptcha' | 'recaptcha' | 'unknown', textMode: boolean): boolean {
+    if (this.config.videoSolveEnabled === false) return false;
+    if (this.config.speculativeBurstEnabled === false) return false;
+    if (puzzleSource === 'recaptcha') return false;
+    if (textMode) return false;
+    return true;
+  }
+
   private shouldRetryAsAnimated(puzzleSource: 'hcaptcha' | 'recaptcha' | 'unknown'): boolean {
     if (!this.repeatedAnswerSeen) return false;
     if (puzzleSource === 'recaptcha') return false;
@@ -3331,15 +3738,73 @@ export class CaptchaKrakenSolver {
 
     const ownedFrames: string[] = []; // fresh frames WE captured (never initialShot)
     const mergedUsage: TokenUsage[] = [];
+    // Declared out here so the `finally` can remove it.
+    const liveAnchor = path.join(
+      os.tmpdir(), `ck_move_${Date.now()}_${Math.floor(Math.random() * 1e9)}.png`);
     try {
       let currentPath = initialShot;
+
+      // An anchor for the movement question, taken LIVE — the screenshot sent
+      // to the model was taken with animations frozen, so comparing against it
+      // asks "does the live widget differ from a frozen one", which is a
+      // different and much noisier question than "did it move".
+      let haveAnchor = false;
+      try {
+        await captchaElement.screenshot({ path: liveAnchor, timeout: 2500, animations: 'allow' });
+        haveAnchor = true;
+      } catch { /* no anchor, no movement check — never fails a solve */ }
+
       let response = await runQuery(currentPath);
       mergedUsage.push(...response.token_usage);
+
       if (!enabled) return response;
 
+      // DID THE PICTURE MOVE WHILE THE MODEL READ IT? Asked once per round, at
+      // the noise floor rather than the staleness threshold.
+      //
+      // A still puzzle answers no and pays one cheap frame diff. A cycling one
+      // answers yes, and the driver can stop pretending it is a still a whole
+      // round earlier than the "same answer came back twice" rule allows —
+      // which cost two still inferences and ~15s of a 40s solve.
+      //
+      // Acting on ONE observation is safe because the recording is
+      // self-checking: a widget that turns out not to move slices to a single
+      // keyframe and is solved as the still it is, for the price of one burst.
+      // page_solver.py makes that argument in `_settle_or_animated`.
+      if (!this.repeatedAnswerSeen && haveAnchor
+          && await this.captchaFrameChangedSince(
+               captchaElement, liveAnchor, MOVED_DURING_INFERENCE_DIFF, 'allow')) {
+        this.repeatedAnswerSeen = true;
+        console.log(
+          '[freshness] the widget moved while the model was reading it, with '
+          + 'nothing clicked — recording it rather than answering another still.',
+        );
+      }
+
+      let changedDuringInference = 0;
       for (let i = 0; i < maxReSolves; i++) {
         if (!(await this.captchaFrameChangedSince(captchaElement, currentPath, threshold))) {
           break; // frame held still through inference — the answer is valid.
+        }
+        // CHANGED AGAIN, having already re-solved once and touched nothing.
+        //
+        // One change is a board still developing — tiles fading in — which is
+        // what the re-solve below is for. A SECOND change in the same round is
+        // a board that does not stop, and re-solving it is futile: each answer
+        // is for a screen that will be gone before the click. Recording it is
+        // what works, and this is the earliest the driver can know.
+        //
+        // It used to learn it a round later, from the same answer coming back
+        // twice — two still inferences and ~10s of a 40s solve spent
+        // rediscovering something the guard had already watched happen.
+        if (++changedDuringInference >= 2) {
+          this.repeatedAnswerSeen = true;
+          console.log(
+            '[freshness] the frame changed twice during inference with nothing '
+            + 'clicked — this board cycles; recording it rather than re-solving '
+            + 'a screen that has gone.',
+          );
+          return { actions: response.actions, token_usage: mergedUsage };
         }
         const fresh = path.join(
           os.tmpdir(),
@@ -3364,6 +3829,7 @@ export class CaptchaKrakenSolver {
       }
       return { actions: response.actions, token_usage: mergedUsage };
     } finally {
+      if (fs.existsSync(liveAnchor)) { try { fs.unlinkSync(liveAnchor); } catch { /* best-effort */ } }
       for (const f of ownedFrames) {
         if (fs.existsSync(f)) {
           try { fs.unlinkSync(f); } catch { /* best-effort cleanup */ }
@@ -3385,6 +3851,7 @@ export class CaptchaKrakenSolver {
     captchaElement: ElementHandle,
     priorPath: string,
     threshold: number,
+    animations: 'allow' | 'disabled' = 'disabled',
   ): Promise<boolean> {
     const probe = path.join(
       os.tmpdir(),
@@ -3639,6 +4106,82 @@ export class CaptchaKrakenSolver {
    */
   private async performSmoothMove(page: Page, x: number, y: number) {
     await this.ph('mouse', () => this.human.move(page, [x, y]));
+  }
+
+  /**
+   * Where in the element this click lands, in element-relative pixels.
+   *
+   * Split out of `executeClick` because on an animated board the point has to
+   * be chosen ONCE and then used three times — to park the pointer, to ask
+   * `match-region` about the right neighbourhood, and to press. Choosing it
+   * inside the click (it is randomised within the target) meant the gate
+   * watched the bbox centre while the press landed somewhere else.
+   */
+  private clickPointFor(
+    action: ClickAction,
+    elementBox: { x: number, y: number, width: number, height: number },
+  ): [number, number] | null {
+    if (action.target_bounding_box) {
+      const [minX, minY, maxX, maxY] = action.target_bounding_box;
+      const pixelMinX = minX * elementBox.width;
+      const pixelMaxX = maxX * elementBox.width;
+      const pixelMinY = minY * elementBox.height;
+      const pixelMaxY = maxY * elementBox.height;
+      const paddingX = (pixelMaxX - pixelMinX) * 0.1;
+      const paddingY = (pixelMaxY - pixelMinY) * 0.1;
+      const safeMinX = pixelMinX + paddingX;
+      const safeMaxX = pixelMaxX - paddingX;
+      const safeMinY = pixelMinY + paddingY;
+      const safeMaxY = pixelMaxY - paddingY;
+      return [
+        safeMinX + Math.random() * (safeMaxX - safeMinX),
+        safeMinY + Math.random() * (safeMaxY - safeMinY),
+      ];
+    }
+    if (action.target_coordinates) {
+      const [xPct, yPct] = action.target_coordinates;
+      return [xPct * elementBox.width, yPct * elementBox.height];
+    }
+    return null;
+  }
+
+  /**
+   * Click one target on an ANIMATED board, at the moment its screen is up.
+   *
+   * The order is the point of it. The pointer is parked on the target FIRST,
+   * then the gate opens, then the press happens in place — so the only thing
+   * between "the right screen is showing" and the click is a mouse-down.
+   *
+   * It used to wait and then call `executeClick`, which begins with a humanised
+   * move: 274ms p10 / 398ms p50 / 647ms max across a 340x384 widget, against a
+   * 1500ms median dwell. A quarter to a third of the screen's life spent
+   * travelling after we had already confirmed it was the right one — so the
+   * gate could do its job and the click still land on the next screen.
+   * `move()` short-circuits when it is already at the target, so parking early
+   * costs nothing and removes all of it.
+   */
+  private async clickWhenFrameMatches(
+    page: Page,
+    element: ElementHandle,
+    action: ClickAction,
+    elementBox: { x: number, y: number, width: number, height: number },
+    awaitKeyframe: string,
+  ): Promise<void> {
+    const rel = this.clickPointFor(action, elementBox);
+    if (!rel) {
+      console.warn('Click action received without coordinates or bounding box', action);
+      return;
+    }
+    const at: [number, number] = [elementBox.x + rel[0], elementBox.y + rel[1]];
+    await this.ph('mouse', () => this.human.move(page, at));
+    // The gate watches the neighbourhood of the point we are about to press,
+    // not the middle of the box — those differ on a wide target, and the one
+    // that matters is where the finger is.
+    await this.waitForKeyframe(
+      element, awaitKeyframe,
+      rel[0] / elementBox.width, rel[1] / elementBox.height,
+    );
+    await this.ph('mouse', () => this.human.click(page, at));
   }
 
   private async executeClick(

@@ -450,6 +450,18 @@ export interface CaptchaKrakenConfig {
    */
   keyframeWaitTimeoutMs?: number;
   keyframeWaitPollMs?: number;
+  /**
+   * Hard ceiling on a burst that never repeats a screen. The burst normally
+   * ends when the cycle closes; this bounds a continuous animation, which never
+   * closes one. Default 12000ms.
+   */
+  videoBurstMaxMs?: number;
+  /**
+   * Record while the still screenshot is being read, so a cycling board is
+   * known before its answer is acted on. Default on. Off restores the older
+   * shape, which learned the same thing two rounds later.
+   */
+  speculativeBurstEnabled?: boolean;
 
   /**
    * Extra wall clock (ms) granted ONCE, the first time a solve escalates to a

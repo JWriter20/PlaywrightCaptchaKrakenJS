@@ -238,6 +238,32 @@
         "max": 518400
       },
       "note": "PRIVATE on the Hub. The 'text' expert arm of the routed CaptchaKraken/Abyss, from run 20260906-014253. Tier 2 gated_overall 0.8750 against a 0.8375 baseline, solved 0.8750, forgetting 0; Tier 3 5/6 pairs. `passed-partial` because the run is type-narrowed by construction — an arm trains on its own families — which disqualifies `ready-to-deploy` and says nothing bad about it. It has its OWN entry rather than an alias onto the router because it now has its own weights at its own repo id, and `experts` names what goes ON THE WIRE — an alias would resolve a real, separately fetchable adapter to another model's entry. It still declares the router's prompt generation and pixel band, which is what check_prompt_parity.py requires of every expert and what makes the mixture coherent."
+    },
+    "CaptchaKraken/Abyss-video": {
+      "availability": "private",
+      "prompt_version": "2",
+      "kind": "lora",
+      "base_model": "Qwen/Qwen3.5-9B",
+      "lora_revision": "main",
+      "lora_name": "abyss-video",
+      "pixel_budget": {
+        "min": 518400,
+        "max": 518400
+      },
+      "note": "PRIVATE on the Hub. The 'video' expert arm of the routed CaptchaKraken/Abyss, from run 20260906-014343. Base model and pixel band CONFIRMED against that run's record at publish time (Qwen/Qwen3.5-9B, min_pixels == max_pixels == 518400), and it declares the router's prompt generation 2 — which is what check_prompt_parity.py requires of every expert and what makes the mixture coherent. It has its OWN entry rather than an alias onto the router because it now has its own weights at its own repo id, and `experts` names what goes ON THE WIRE. UNGATED, AND THAT IS THE POINT OF SAYING SO HERE: this run's driver was OOM-killed before the tiers ran, so NO Tier 2 or Tier 3 number exists for these weights. The video-arm Tier 2 on file was measured against an INTERIM checkpoint served under the wire name `abyss`, not against this adapter, so it must not be read as this model's score. Registering it makes it resolvable and fetchable by an authorised token; it does not make it measured."
+    },
+    "CaptchaKraken/Abyss-general": {
+      "availability": "private",
+      "prompt_version": "2",
+      "kind": "lora",
+      "base_model": "Qwen/Qwen3.5-9B",
+      "lora_revision": "main",
+      "lora_name": "abyss-general",
+      "pixel_budget": {
+        "min": 518400,
+        "max": 518400
+      },
+      "note": "PRIVATE on the Hub. The 'pixel' expert arm of the routed CaptchaKraken/Abyss AND its generalist fallback, from run 20260906-014408. Base model and pixel band CONFIRMED against that run's record at publish time (Qwen/Qwen3.5-9B, min_pixels == max_pixels == 518400), declaring the router's prompt generation 2 as check_prompt_parity.py requires of every expert. THIS IS THE ENTRY THE ROUTER'S OWN `lora_name` NAMES: CaptchaKraken/Abyss stayed `licensed` precisely because `abyss-general` had no bytes at any repo id, and it now does, so the generalist graduates to its own entry exactly as grid, text and video did. The router entry STAYS `licensed` — it is the mixture rather than an artifact, and there is still nothing downloadable at that repo id. UNGATED: the rental was stopped straight after `fetch` to end billing, so NO Tier 2 or Tier 3 number exists for these weights, and its run record reads failed at a later stage for that reason rather than for anything the model did. Registering it makes it resolvable and fetchable by an authorised token; it does not make it measured."
     }
   },
   "served_aliases": {
@@ -248,8 +274,8 @@
     "abyss": "CaptchaKraken/Abyss",
     "_comment_abyss_experts": "The four expert arms. These are the names that go ON THE WIRE — a routed request for a grid names `abyss-grid`, never `abyss` — so without these lines `canonical_model_id` returns None for the string the client actually sent, and prompt resolution falls through to the `latest` fallback on every routed solve. That is the mispairing `abyss` itself is here to prevent, one level down and four times over. Aliasing four arms onto one entry rather than giving each its own is deliberate and CHECKED: they share a base, a prompt generation and a pixel band today, and check_prompt_parity.py requires every expert name to resolve to a registered entry declaring the SAME prompt_version and pixel_budget as the router — so the day an arm trains at another generation or another band, the gate refuses the alias and that arm has to graduate to an entry of its own.",
     "abyss-grid": "CaptchaKraken/Abyss-grid",
-    "abyss-general": "CaptchaKraken/Abyss",
-    "abyss-video": "CaptchaKraken/Abyss",
+    "abyss-general": "CaptchaKraken/Abyss-general",
+    "abyss-video": "CaptchaKraken/Abyss-video",
     "abyss-text": "CaptchaKraken/Abyss-text",
     "abyss-27b": "CaptchaKraken/Abyss-27B"
   }

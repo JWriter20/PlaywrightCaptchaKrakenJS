@@ -542,6 +542,10 @@ def _handle_solve_animated() -> bool:
             # solve log rather than only inferable from the answer.
             "keyframes": paths,
             "keyframe_mode": kfset.mode,
+            # What the board LOOKS like, as distinct from how it was
+            # sliced. The driver gates its clicks on this; see
+            # KeyframeSet.steady_screens.
+            "steady_screens": kfset.steady_screens,
             "source_frames": len(imgs),
         }))
     except UnsupportedCaptchaError as e:

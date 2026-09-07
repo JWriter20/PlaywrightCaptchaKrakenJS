@@ -107,4 +107,4 @@ __all__ = [
 # It said 2.6.0 while the wheel on PyPI said 2.6.1, so anyone gating on the
 # runtime attribute saw a version that had not been current for weeks.
 # tests/test_public_contract.py compares all three.
-__version__ = "2.8.0"
+__version__ = "2.9.0"

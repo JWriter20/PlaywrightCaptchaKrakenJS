@@ -49,13 +49,18 @@ def test_the_budget_is_derived_from_what_a_recording_actually_costs():
     The whole failure was a fixed number that had no relationship to the work,
     so a constant here would be the same mistake with a friendlier value.
     """
+    # Derived from the burst's CEILING since 2026-09-07. A burst now runs until
+    # the board's cycle closes rather than for a fixed 4s — a 4s window cannot
+    # contain the 5.3s cycle measured on GeeTest svg, so it was omitting one
+    # screen of three — and the grant has to cover the longest one it will sit
+    # through, not the shortest.
     cfg = PageSolverConfig()
-    assert cfg.video_budget_ms() == (cfg.video_burst_duration_ms
+    assert cfg.video_budget_ms() == (cfg.video_burst_max_ms
                                      + cfg.keyframe_wait_timeout_ms
                                      + cfg.video_extra_inference_ms)
 
-    longer = PageSolverConfig(video_burst_duration_ms=cfg.video_burst_duration_ms * 2)
-    assert longer.video_budget_ms() - cfg.video_budget_ms() == cfg.video_burst_duration_ms
+    longer = PageSolverConfig(video_burst_max_ms=cfg.video_burst_max_ms * 2)
+    assert longer.video_budget_ms() - cfg.video_budget_ms() == cfg.video_burst_max_ms
 
 
 def test_recording_extends_the_deadline_once_and_only_once(monkeypatch):

@@ -1,6 +1,6 @@
 {
   "python": {
-    "version": "2.8.0",
+    "version": "2.9.0",
     "exports": [
       "ActionPlanner",
       "AppiumTouchBackend",
@@ -73,6 +73,7 @@
       "slide_max_corrections",
       "slide_probe_offsets_px",
       "slide_tolerance_px",
+      "speculative_burst_enabled",
       "stale_element_backoff_ms",
       "stale_frame_diff_threshold",
       "stale_frame_resolve_enabled",
@@ -81,6 +82,7 @@
       "touch_transform",
       "video_burst_duration_ms",
       "video_burst_fps",
+      "video_burst_max_ms",
       "video_extra_inference_ms",
       "video_solve_enabled"
     ],
@@ -296,8 +298,10 @@
     "registered_models": [
       "CaptchaKraken/Abyss",
       "CaptchaKraken/Abyss-27B",
+      "CaptchaKraken/Abyss-general",
       "CaptchaKraken/Abyss-grid",
       "CaptchaKraken/Abyss-text",
+      "CaptchaKraken/Abyss-video",
       "CaptchaKraken/CaptchaKraken-Lora-v1.2",
       "CaptchaKraken/CaptchaKrakenV1_Lora",
       "CaptchaKraken/CaptchaKraken_v1.1",
@@ -434,6 +438,7 @@
       "settleFrames",
       "settlePollMs",
       "settleTimeoutMs",
+      "speculativeBurstEnabled",
       "staleElementBackoffMs",
       "staleFrameDiffThreshold",
       "staleFrameReSolveEnabled",
@@ -443,6 +448,7 @@
       "touchTransform",
       "videoBurstDurationMs",
       "videoBurstFps",
+      "videoBurstMaxMs",
       "videoExtraInferenceMs",
       "videoSolveEnabled"
     ],

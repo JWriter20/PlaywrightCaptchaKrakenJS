@@ -326,7 +326,11 @@ class TestSolveLoop:
         solver.detect_captcha = lambda _page: FakeElement(src="recaptcha/api2/bframe")  # type: ignore[method-assign]
         solver.is_captcha_solved = lambda _page: False  # type: ignore[method-assign]
         solver._is_challenge_freshly_rendered = lambda _page: False  # type: ignore[method-assign]
-        solver._has_recaptcha_underselect_error = lambda _page: True  # type: ignore[method-assign]
+        # `select-more` specifically: the banner where the tiles do NOT refresh.
+        # `dynamic-more` is deliberately NOT fatal — it is the dynamic 3x3's
+        # normal progress — and is pinned in
+        # test_recaptcha_dynamic_more_is_not_an_error.py.
+        solver._recaptcha_banner_kind = lambda _page: "select-more"  # type: ignore[method-assign]
 
         seen_retry_modes: List[Optional[str]] = []
 
