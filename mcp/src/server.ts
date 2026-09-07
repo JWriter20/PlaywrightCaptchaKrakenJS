@@ -176,7 +176,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export function createServer(baseUrl: string, clientName: string): McpServer {
   const api = new ControlPlane(baseUrl);
   const server = new McpServer(
-    { name: 'captchakraken', version: '0.1.2' },
+    { name: 'captchakraken', version: '0.1.3' },
     {
       instructions:
         'CaptchaKraken account management. Use sign_in once to connect a GitHub account, ' +
@@ -589,14 +589,19 @@ export function createServer(baseUrl: string, clientName: string): McpServer {
       title: 'Get a top-up link',
       description:
         'A URL the human opens to add credits. THIS DOES NOT CHARGE ANYTHING — it returns a ' +
-        'link; a person completes the payment on Stripe. Omit `usd` to let them choose the ' +
+        'link; a person completes the payment on Stripe. Any whole dollar amount from $5 is ' +
+        'accepted, and larger amounts earn bonus credits. Omit `usd` to let them choose the ' +
         'amount, which is the right default when the agent has not been told what to spend.',
       inputSchema: {
         usd: z
           .number()
-          .positive()
+          .int()
+          .min(5)
           .optional()
-          .describe('A published pack amount. Omit to return the chooser page instead.'),
+          .describe(
+            'A whole dollar amount, $5 or more. Larger amounts earn bonus credits. Omit to ' +
+              'return the chooser page, where the human picks the amount themselves.',
+          ),
       },
       annotations: { title: 'Get a top-up link', readOnlyHint: false, openWorldHint: true },
     },
@@ -607,7 +612,9 @@ export function createServer(baseUrl: string, clientName: string): McpServer {
           kind: 'chooser' | 'checkout';
           usd?: number;
           credits?: number;
-          packs?: Array<{ usd: number; credits: number }>;
+          packs?: Array<{ usd: number; credits: number; bonus_percent?: number }>;
+          min_usd?: number;
+          max_usd?: number;
         }>('/api/v1/billing/checkout', {
           method: 'POST',
           body: usd === undefined ? {} : { usd },
@@ -620,11 +627,23 @@ export function createServer(baseUrl: string, clientName: string): McpServer {
           );
         }
 
+        // The packs are SUGGESTIONS now, not the set of amounts on sale — the
+        // page takes any whole dollar amount in the range. Presenting them as
+        // "available packs" is what would make an agent tell a human they have
+        // to pick one of three.
         const packs = (result.packs ?? [])
-          .map((pack) => `  $${pack.usd} → ${pack.credits.toLocaleString('en-US')} credits`)
+          .map(
+            (pack) =>
+              `  $${pack.usd} → ${pack.credits.toLocaleString('en-US')} credits` +
+              (pack.bonus_percent ? ` (+${pack.bonus_percent}% bonus)` : ''),
+          )
           .join('\n');
+        const range =
+          result.min_usd && result.max_usd
+            ? `Any whole dollar amount from $${result.min_usd} to $${result.max_usd}.`
+            : 'Any whole dollar amount.';
         return text(
-          `Top-up page:\n\n  ${result.url}\n\nAvailable packs:\n${packs}\n\nNothing has been charged.`,
+          `Top-up page:\n\n  ${result.url}\n\n${range} Common choices:\n${packs}\n\nNothing has been charged.`,
         );
       } catch (error) {
         return describe(error);

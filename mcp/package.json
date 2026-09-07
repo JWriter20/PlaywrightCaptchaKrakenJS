@@ -1,6 +1,6 @@
 {
   "name": "captchakraken-mcp",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "MCP server for the CaptchaKraken account: sign in with GitHub, mint and revoke API keys for the captcha-solving endpoint, and read your usage and balance. Writes the key to disk so the solver needs no environment variables.",
   "type": "module",
   "author": "Jake Writer",
