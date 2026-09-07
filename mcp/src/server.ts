@@ -176,7 +176,7 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 export function createServer(baseUrl: string, clientName: string): McpServer {
   const api = new ControlPlane(baseUrl);
   const server = new McpServer(
-    { name: 'captchakraken', version: '0.1.3' },
+    { name: 'captchakraken', version: '0.1.4' },
     {
       instructions:
         'CaptchaKraken account management. Use sign_in once to connect a GitHub account, ' +
@@ -764,7 +764,15 @@ export function createServer(baseUrl: string, clientName: string): McpServer {
           if (model.accuracy !== null) {
             lines.push(`  Measured: ${(model.accuracy * 100).toFixed(1)}% exact match`);
           }
-          if (model.video) lines.push('  Handles video challenges.');
+          // NO VIDEO LINE. Animated support is a property of the GENERATION:
+          // every v1.2 model answers animated challenges and no v1 or v1.1 model
+          // can. The whole lineup is v1.2, so this printed on all three — which
+          // tells an agent choosing between them nothing, and implies the ones
+          // it is missing from cannot. It was worse than uninformative until
+          // 2026-09-06, when the control plane had Sunlight flagged `false` and
+          // this line said the 4-bit merge could not do video. The field is
+          // still published by `/api/v1/models`; it just is not worth a line
+          // while it is true of everything.
           lines.push('');
         }
         return text(lines.join('\n').trimEnd());
