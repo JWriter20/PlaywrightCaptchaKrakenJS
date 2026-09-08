@@ -49,6 +49,7 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from urllib.parse import urlsplit
 
 from .action_types import CaptchaAction
 from .solver import CaptchaSolver, UnsupportedCaptchaError
@@ -60,6 +61,38 @@ DEBUG = os.getenv("CAPTCHA_DEBUG", "0") == "1"
 # Read by planner.py, which turns it into the X-CK-Session header. Kept as a
 # module constant so the name is defined in exactly one place per port.
 _SESSION_ENV = "CAPTCHA_KRAKEN_SESSION"
+
+# Read by planner.py, which turns it into the X-CK-Site header. Same shape and
+# same lifetime as the session id above, for the same reason: the value belongs
+# to ONE solve, and a stale one would attribute this captcha to the last page.
+_SITE_ENV = "CAPTCHA_KRAKEN_SITE"
+
+
+def _site_of(page: Any) -> str:
+    """The HOSTNAME of the page being solved, or "" if it cannot be read.
+
+    WHY THE HOSTNAME AND NOTHING ELSE. This value leaves the caller's machine.
+    A URL's path and query are where session tokens, order ids and email
+    addresses live, so `urlsplit().hostname` is doing the real work here — it
+    drops the path, the query, the fragment, the port and any `user:pass@`
+    prefix, and it is a parser rather than a pattern that has to be got right.
+    A captcha appears on a login page, which is precisely the URL you would
+    least want to send anywhere.
+
+    NEVER RAISES, and returns "" rather than guessing. `page.url` is a property
+    in Playwright and a method in Puppeteer-shaped ports, so both are tried;
+    anything else — a fake page in a test, a page that has navigated away
+    mid-solve, an `about:blank` with no host at all — yields "" and the header
+    is simply absent. A solve must not fail over a piece of telemetry, and a
+    site nobody can read is not a site worth inventing.
+    """
+    try:
+        raw = page.url
+        if callable(raw):
+            raw = raw()
+        return (urlsplit(str(raw)).hostname or "").lower()
+    except Exception:  # noqa: BLE001 — see the docstring
+        return ""
 
 
 def _log(message: str) -> None:
@@ -3282,6 +3315,17 @@ class PageSolver:
         previous_session = os.environ.get(_SESSION_ENV)
         session_id = str(uuid.uuid4())
         os.environ[_SESSION_ENV] = session_id
+        # And the site, on the same lifetime. POPPED rather than left alone when
+        # this page has no readable host: leaving the previous solve's value
+        # would file this captcha under the last page's domain, which is worse
+        # than filing it under none — a per-site rate is only worth reading if
+        # every row in it is a site the solve actually happened on.
+        previous_site = os.environ.get(_SITE_ENV)
+        site = _site_of(page)
+        if site:
+            os.environ[_SITE_ENV] = site
+        else:
+            os.environ.pop(_SITE_ENV, None)
         # The verdict this driver reports back, and it starts FALSE. A solve
         # that raises never sets it, which is the right default: the widget did
         # not accept, and the boards that made it raise are exactly the ones
@@ -3313,6 +3357,10 @@ class PageSolver:
                 os.environ.pop(_SESSION_ENV, None)
             else:
                 os.environ[_SESSION_ENV] = previous_session
+            if previous_site is None:
+                os.environ.pop(_SITE_ENV, None)
+            else:
+                os.environ[_SITE_ENV] = previous_site
 
     def _solve_impl(
         self,

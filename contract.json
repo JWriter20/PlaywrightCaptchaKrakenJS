@@ -1,6 +1,6 @@
 {
   "python": {
-    "version": "2.9.0",
+    "version": "2.10.0",
     "exports": [
       "ActionPlanner",
       "AppiumTouchBackend",
@@ -219,6 +219,10 @@
       "python/src/captchakraken/page_solver.py",
       "python/src/captchakraken/planner.py"
     ],
+    "CAPTCHA_KRAKEN_SITE": [
+      "python/src/captchakraken/page_solver.py",
+      "python/src/captchakraken/planner.py"
+    ],
     "CAPTCHA_KRAKEN_SKIP_PYTHON_SETUP": [
       "js/scripts/setup-python.js"
     ],
@@ -255,6 +259,9 @@
     ],
     "CAPTCHA_REPORT_OUTCOME": [
       "js/src/solver.ts",
+      "python/src/captchakraken/planner.py"
+    ],
+    "CAPTCHA_REPORT_SITE": [
       "python/src/captchakraken/planner.py"
     ],
     "CAPTCHA_REQUEST_PRIORITY": [
